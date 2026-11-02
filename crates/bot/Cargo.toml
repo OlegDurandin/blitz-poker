@@ -1,0 +1,9 @@
+[package]
+name = "bot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Bot Alex: decisions made only from a player-restricted view"
+
+[dependencies]
+poker-core.workspace = true

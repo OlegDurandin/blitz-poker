@@ -1,0 +1,11 @@
+/target
+node_modules/
+/web/dist/
+# Built from crates/poker-wasm by `npm run wasm`
+/web/src/engine/generated/
+.DS_Store
+
+# Secrets (VK tokens etc.)
+.env
+.env.*
+!.env.example
