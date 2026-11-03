@@ -5,6 +5,7 @@ pub mod card;
 pub mod engine;
 pub mod eval;
 pub mod history;
+pub mod perspective;
 pub mod rng;
 
 pub use card::{Card, Suit};
