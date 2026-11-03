@@ -14,7 +14,12 @@ export type AnalyticsEvent =
   | 'match_completed'
   | 'match_abandoned'
   | 'rematch_clicked'
-  | 'hand_history_opened';
+  | 'hand_history_opened'
+  | 'match_history_opened'
+  | 'hand_replay_opened'
+  | 'hand_replay_stepped'
+  | 'bot_action_selected'
+  | 'persistence_error';
 
 type Params = Record<string, string | number | boolean | null>;
 type Transport = (event: AnalyticsEvent, params: Params) => void;

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { engine, initEngine } from './engine';
-import type { EngineResult, PlayerView } from './types';
+import type { EngineResult, HandRecord, PlayerView, ReplayFrame } from './types';
 
 beforeAll(async () => {
   await initEngine(readFileSync(new URL('./generated/poker.wasm', import.meta.url)));
@@ -70,6 +70,57 @@ describe('wasm engine', () => {
     const cheat = { ...(t.state as object), stacks: [1000, 600] };
     const res2 = engine.load(cheat);
     expect(!res2.ok && res2.error.code).toBe('corrupt_save');
+  });
+
+  it('archives every hand and replays it to the recorded outcome without touching the match', () => {
+    let res = ok(engine.newMatch('5eed5eed5eed5eed'));
+    let guard = 0;
+    while (res.view.phase !== 'match_over') {
+      expect(++guard).toBeLessThan(400);
+      const v = res.view;
+      if (v.phase === 'hand_over') res = ok(engine.next(res.state));
+      else if (v.to_act === 'bot') res = ok(engine.botAct(res.state));
+      else {
+        // Fold now and then so some bot hands stay hidden.
+        const a = v.legal!.fold && guard % 3 === 0 ? 'fold' : v.legal!.check ? 'check' : 'call';
+        res = ok(engine.act(res.state, { type: a }));
+      }
+    }
+    const before = JSON.stringify(res.state);
+    const history = engine.history(res.state);
+    if (!history.ok) throw new Error(history.error.message);
+    expect(history.hands).toHaveLength(res.view.result!.hands_played);
+
+    // Internal snapshot: both players' hole cards per hand (never shown in the UI).
+    const internal = (res.state as { history: Array<{ holes: [string[], string[]] }> }).history;
+    let expectedStart: [number, number] = [600, 600];
+    history.hands.forEach((h: HandRecord, i) => {
+      expect(h.start_stacks).toEqual(expectedStart);
+      const r = engine.replay(h);
+      if (!r.ok) throw new Error(r.error.message);
+      const frames: ReplayFrame[] = r.frames;
+      const last = frames.at(-1)!;
+      expect(last.event.type).toBe('award');
+      expect(last.stacks[0] - h.start_stacks[0]).toBe(h.outcome!.net[0]);
+      for (const f of frames) expect(f.stacks[0] + f.stacks[1] + f.bets[0] + f.bets[1] + f.pot).toBe(1200);
+      if (!h.outcome!.showdown) {
+        const json = JSON.stringify(frames) + JSON.stringify(h);
+        for (const c of internal[i].holes[1]) expect(json).not.toContain(`"${c}"`);
+      }
+      expectedStart = last.stacks;
+    });
+    expect(JSON.stringify(res.state)).toBe(before);
+  });
+
+  it('archives an abandoned match with its unfinished hand', () => {
+    let res = ok(engine.newMatch('abad0abad0abad00'));
+    if (res.view.to_act === 'bot') res = ok(engine.botAct(res.state));
+    const history = engine.history(res.state);
+    if (!history.ok) throw new Error(history.error.message);
+    const current = history.hands.at(-1)!;
+    expect(current.outcome).toBeNull();
+    const r = engine.replay(current);
+    expect(r.ok && r.frames.at(-1)!.event.type).toBe('unfinished');
   });
 
   it('tutorial is a single labelled hand with a passive bot', () => {

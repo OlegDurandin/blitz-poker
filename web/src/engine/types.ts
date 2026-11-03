@@ -86,14 +86,47 @@ export interface HandOutcome {
   runout_from: number | null;
 }
 
-export interface HandSummary {
+/** One hand as the human may see it (engine `HandRecord`). */
+export interface HandRecord {
   number: number;
   button: Seat;
   sb: number;
   bb: number;
+  /** `[human, bot]` before the blinds. */
+  start_stacks: [number, number];
+  /** Own hole cards; null for hands saved by version 1.0. */
+  hole: [Card, Card] | null;
+  /** Face-up cards only. */
   board: Card[];
   actions: ActionRecord[];
-  outcome: HandOutcome;
+  /** null while unfinished (abandoned mid-hand). */
+  outcome: HandOutcome | null;
+}
+
+export type ReplayEvent =
+  | { type: 'start' }
+  | { type: 'action'; action: ActionRecord }
+  | { type: 'street'; street: Street; runout: boolean }
+  | { type: 'showdown'; hands: [ShownHand, ShownHand] }
+  | {
+      type: 'award';
+      winner: Seat | null;
+      by_fold: boolean;
+      pot: number;
+      awarded: [number, number];
+      net: [number, number];
+    }
+  | { type: 'unfinished' };
+
+/** Public table state right after `event`. */
+export interface ReplayFrame {
+  event: ReplayEvent;
+  street: Street;
+  board: Card[];
+  stacks: [number, number];
+  bets: [number, number];
+  pot: number;
+  showdown: [ShownHand, ShownHand] | null;
 }
 
 export interface MatchResult {
@@ -132,7 +165,7 @@ export interface PlayerView {
   is_final_hand: boolean;
   next_blinds: [number, number] | null;
   result: MatchResult | null;
-  history: HandSummary[];
+  history: HandRecord[];
 }
 
 /** Opaque engine snapshot; stored and passed back verbatim. */
@@ -146,6 +179,11 @@ export type EngineErrorCode =
   | 'invalid_amount'
   | 'incompatible_save'
   | 'corrupt_save';
+
+export type EngineFailure = { ok: false; error: { code: EngineErrorCode; message: string } };
+
+export type HistoryResult = { ok: true; schema: number; hands: HandRecord[] } | EngineFailure;
+export type ReplayResult = { ok: true; frames: ReplayFrame[] } | EngineFailure;
 
 export type EngineResult =
   | { ok: true; state: MatchState; view: PlayerView; bot_action?: PlayerAction }

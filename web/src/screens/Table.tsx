@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
-import { BotAvatar, ChipIcon } from '../components/icons';
+import { BotAvatar } from '../components/icons';
 import { PlayingCard } from '../components/PlayingCard';
 import { RaiseSheet } from '../components/RaiseSheet';
+import { ActionTag, BetChip, DealerButton, Stack } from '../components/TableParts';
 import type { ActionRecord, Card, PlayerAction, PlayerView, Seat } from '../engine/types';
-import { BOT_NAME, STREET_NAME, actionLabel, categoryLower, signed } from '../game/format';
+import { BOT_NAME, STREET_NAME, categoryLower } from '../game/format';
 import { prefersReducedMotion } from '../game/motion';
 import type { TutorialStep } from '../game/storage';
 import { haptic } from '../vk';
@@ -319,43 +320,6 @@ function TutorialHint({ step, onOk, onSkip }: { step: TutorialStep; onOk: () => 
       </div>
     </div>
   );
-}
-
-function DealerButton() {
-  return (
-    <span className="dealer" title="Баттон (малый блайнд)" aria-label="Баттон">
-      D
-    </span>
-  );
-}
-
-function Stack({ amount, gain }: { amount: number; gain: number }) {
-  return (
-    <div className="seat__stack" aria-label={`Стек ${amount}`}>
-      <ChipIcon />
-      <span>{amount}</span>
-      {gain > 0 && (
-        <span className="gain" aria-label={`выигрыш ${gain}`}>
-          {signed(gain)}
-        </span>
-      )}
-    </div>
-  );
-}
-
-function BetChip({ amount, who }: { amount: number; who: string }) {
-  return (
-    <div className={`bet${amount > 0 ? '' : ' is-empty'}`} aria-label={amount > 0 ? `Ставка: ${who}, ${amount}` : undefined}>
-      <ChipIcon />
-      {amount}
-    </div>
-  );
-}
-
-function ActionTag({ action, thinking }: { action: ActionRecord | null; thinking?: boolean }) {
-  if (thinking) return <div className="tag tag--thinking">думает…</div>;
-  if (!action) return <div className="tag is-empty" />;
-  return <div className={`tag tag--${action.kind}`}>{actionLabel(action)}</div>;
 }
 
 function ResultBanner({ view }: { view: PlayerView }) {

@@ -1,16 +1,33 @@
 //! Bot Alex.
 //!
 //! The bot only ever sees a [`PlayerView`] for its own seat: its hole cards,
-//! the board, stacks and the betting history. It never touches the match
-//! state, so it cannot peek at the human's cards or the undealt deck.
+//! the board, stacks and the public betting history. It never touches the
+//! match state, so it cannot peek at the human's cards, the undealt deck or
+//! the shuffle RNG.
 //!
-//! Strategy: Monte Carlo equity against an opponent range that narrows with
-//! the opponent's aggression, compared to pot odds, plus a little randomised
-//! value betting and bluffing so it is not trivially exploitable.
+//! Strategy (approximate, not a solved chart):
+//! - Preflop: hands are ranked by heads-up equity vs a random hand
+//!   (`preflop_table.rs`). Opening, defending and 3-betting ranges depend on
+//!   position and effective stack; at 10 big blinds or less it plays
+//!   push/fold.
+//! - Postflop: Monte Carlo equity against an opponent range narrowed by their
+//!   aggression, plus draw detection. Value bets, semi-bluffs, continuation
+//!   bets, occasional traps and bluffs, each with a bounded frequency.
+//! - Price: calls are compared to pot odds, with a little implied odds for
+//!   draws before the river.
+//! - Legality: [`decide`] passes every choice through a sanitizer that only
+//!   returns actions the engine offered.
+
+mod preflop_table;
+#[doc(hidden)]
+pub mod reference;
 
 use poker_core::card::full_deck;
 use poker_core::rng::Rng;
-use poker_core::{ActionKind, Card, LegalActions, PlayerAction, PlayerView, Street, hand_value};
+use poker_core::{
+    ActionKind, ActionRecord, Card, LegalActions, PlayerAction, PlayerView, Seat, Street,
+    hand_value,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Personality {
@@ -21,74 +38,73 @@ pub enum Personality {
 
 const ITERATIONS: usize = 600;
 
+/// Picks a legal action for `view.me`. Deterministic for a given view and seed.
 pub fn decide(view: &PlayerView, personality: Personality, seed: u64) -> PlayerAction {
     let Some(legal) = view.legal.as_ref() else {
         return PlayerAction::Check;
     };
-    let passive = if legal.check {
-        PlayerAction::Check
-    } else {
-        PlayerAction::Call
-    };
+    sanitize(legal, policy(view, legal, personality, seed))
+}
+
+fn policy(
+    view: &PlayerView,
+    legal: &LegalActions,
+    personality: Personality,
+    seed: u64,
+) -> PlayerAction {
     if personality == Personality::Tutorial {
-        return passive;
+        return passive(legal);
     }
     let mut rng = Rng::new(seed);
     let s = Situation::new(view);
-    let range = opponent_range(view);
-    let equity = equity(view.hole, &view.board, range, ITERATIONS, &mut rng);
-
-    if view.street == Street::Preflop && s.effective_bb <= 12.0 {
-        return push_or_fold(&s, legal, equity, &mut rng);
+    if view.street == Street::Preflop {
+        preflop(view, &s, legal, &mut rng)
+    } else {
+        postflop(view, &s, legal, &mut rng)
     }
-    if view.street == Street::Preflop && s.is_unopened_small_blind() {
-        return open_small_blind(&s, legal, equity, &mut rng);
-    }
+}
 
-    let raises = s.aggressive_actions_this_street;
+/// The last line of defence: whatever the strategy chose, return something
+/// the engine accepts.
+fn sanitize(legal: &LegalActions, action: PlayerAction) -> PlayerAction {
+    match action {
+        PlayerAction::Fold if legal.fold => action,
+        PlayerAction::Fold => PlayerAction::Check,
+        PlayerAction::Check if legal.check => action,
+        PlayerAction::Check => PlayerAction::Fold,
+        PlayerAction::Call if legal.call.is_some() => action,
+        PlayerAction::Call => passive(legal),
+        PlayerAction::RaiseTo { amount } => match &legal.raise {
+            Some(r) => PlayerAction::RaiseTo {
+                amount: amount.clamp(r.min_to, r.max_to),
+            },
+            None => passive(legal),
+        },
+    }
+}
+
+fn passive(legal: &LegalActions) -> PlayerAction {
     if legal.check {
-        if equity >= 0.68 && rng.chance(0.85) {
-            return sized(legal, &s, rng_frac(&mut rng, 0.55, 0.8), passive);
-        }
-        if equity >= 0.52 && rng.chance(0.45) {
-            return sized(legal, &s, 0.5, passive);
-        }
-        let bluff = match view.street {
-            Street::Preflop => 0.08,
-            Street::Flop | Street::Turn => 0.2,
-            Street::River => 0.12,
-        };
-        if rng.chance(bluff) {
-            return sized(legal, &s, 0.6, passive);
-        }
-        return PlayerAction::Check;
+        PlayerAction::Check
+    } else {
+        PlayerAction::Call
     }
-
-    let margin = 0.02;
-    if equity >= 0.75 && raises < 3 && rng.chance(0.7) {
-        return sized(legal, &s, rng_frac(&mut rng, 0.6, 0.9), PlayerAction::Call);
-    }
-    if equity >= s.pot_odds + margin {
-        let semi_bluff = matches!(view.street, Street::Flop | Street::Turn) && equity > 0.35;
-        if semi_bluff && raises < 2 && rng.chance(0.06) {
-            return sized(legal, &s, 0.75, PlayerAction::Call);
-        }
-        return PlayerAction::Call;
-    }
-    if raises < 2 && rng.chance(0.03) {
-        return sized(legal, &s, 0.8, PlayerAction::Fold);
-    }
-    PlayerAction::Fold
 }
 
 struct Situation {
+    me: Seat,
     pot_total: u32,
     max_bet: u32,
     to_call: u32,
     pot_odds: f64,
     effective_bb: f64,
-    aggressive_actions_this_street: usize,
-    street: Street,
+    bb: u32,
+    /// Bets and raises on the current street (blinds excluded).
+    raises: usize,
+    /// The opponent already checked on this street.
+    opponent_checked: bool,
+    /// We made the last bet or raise of the previous street.
+    was_aggressor: bool,
 }
 
 impl Situation {
@@ -97,7 +113,16 @@ impl Situation {
         let pot_total = v.pot + v.bets[0] + v.bets[1];
         let to_call = v.to_call.min(v.stacks[me]);
         let effective = (v.stacks[me] + v.bets[me]).min(v.stacks[opp] + v.bets[opp]);
+        let aggressive = |a: &&ActionRecord| matches!(a.kind, ActionKind::Bet | ActionKind::Raise);
+        let last_aggressor_before = v
+            .actions
+            .iter()
+            .rev()
+            .filter(|a| a.street < v.street)
+            .find(aggressive)
+            .map(|a| a.seat);
         Situation {
+            me: v.me,
             pot_total,
             max_bet: v.bets[0].max(v.bets[1]),
             to_call,
@@ -107,76 +132,209 @@ impl Situation {
                 to_call as f64 / (pot_total + to_call) as f64
             },
             effective_bb: effective as f64 / v.bb.max(1) as f64,
-            aggressive_actions_this_street: v
+            bb: v.bb,
+            raises: v
                 .actions
                 .iter()
-                .filter(|a| {
-                    a.street == v.street && matches!(a.kind, ActionKind::Bet | ActionKind::Raise)
-                })
+                .filter(|a| a.street == v.street)
+                .filter(aggressive)
                 .count(),
-            street: v.street,
+            opponent_checked: v.actions.iter().any(|a| {
+                a.street == v.street && a.seat == v.me.other() && a.kind == ActionKind::Check
+            }),
+            was_aggressor: last_aggressor_before == Some(v.me),
         }
-    }
-
-    fn is_unopened_small_blind(&self) -> bool {
-        self.street == Street::Preflop
-            && self.aggressive_actions_this_street == 0
-            && self.to_call > 0
     }
 }
 
-/// First decision on the button preflop: raise, limp or fold.
-fn open_small_blind(
-    s: &Situation,
-    legal: &LegalActions,
-    equity: f64,
-    rng: &mut Rng,
-) -> PlayerAction {
-    if equity >= 0.50 && rng.chance(0.85) {
-        let to = s.max_bet * 5 / 2;
-        return raise_to(legal, to).unwrap_or(PlayerAction::Call);
+fn all_in(legal: &LegalActions) -> Option<PlayerAction> {
+    legal
+        .raise
+        .as_ref()
+        .map(|r| PlayerAction::RaiseTo { amount: r.max_to })
+}
+
+/// Share of the small blind's hands that may be shoved at `eff` big blinds
+/// (rounded from heads-up push/fold charts).
+fn push_share(eff: f64) -> f64 {
+    if eff <= 5.0 {
+        0.85
+    } else if eff <= 8.0 {
+        0.68
+    } else {
+        0.56
     }
-    if equity >= 0.38 || rng.chance(0.15) {
+}
+
+fn preflop(v: &PlayerView, s: &Situation, legal: &LegalActions, rng: &mut Rng) -> PlayerAction {
+    let top = top_share(v.hole);
+    let eff = s.effective_bb;
+    let shove = all_in(legal);
+
+    // Small blind (button), first decision.
+    if s.raises == 0 && s.to_call > 0 {
+        if eff <= 10.0 {
+            if top <= 0.12 && eff > 7.0 && rng.chance(0.25) {
+                return raise_to(legal, s.bb * 2).unwrap_or(PlayerAction::Call);
+            }
+            return match shove {
+                Some(a) if top <= push_share(eff) => a,
+                _ if top <= push_share(eff) => PlayerAction::Call,
+                _ => PlayerAction::Fold,
+            };
+        }
+        let open = if eff > 16.0 { 0.66 } else { 0.58 };
+        if top <= 0.05 && rng.chance(0.12) {
+            return PlayerAction::Call; // occasional trap limp
+        }
+        if top <= open {
+            let size = if eff > 16.0 {
+                s.bb * 5 / 2
+            } else {
+                s.bb * 9 / 4
+            };
+            return raise_to(legal, size).unwrap_or(PlayerAction::Call);
+        }
+        if top <= open + 0.15 && rng.chance(0.5) {
+            return PlayerAction::Call;
+        }
+        return PlayerAction::Fold;
+    }
+
+    // Big blind after a limp.
+    if s.raises == 0 {
+        if eff <= 10.0 {
+            return match shove {
+                Some(a) if top <= 0.25 => a,
+                _ => PlayerAction::Check,
+            };
+        }
+        if top <= 0.22 || rng.chance(0.06) {
+            return raise_to(legal, s.bb * 4).unwrap_or(PlayerAction::Check);
+        }
+        return PlayerAction::Check;
+    }
+
+    // Facing a raise.
+    let equity = equity(v.hole, &v.board, opponent_range(v), ITERATIONS, rng);
+    let stack = v.stacks[s.me.idx()];
+    let committing = legal.call_is_all_in || s.to_call as f64 >= 0.35 * stack as f64;
+    if committing {
+        if equity >= s.pot_odds + 0.02 {
+            return match shove {
+                Some(a) if top <= 0.04 => a,
+                _ => PlayerAction::Call,
+            };
+        }
+        return PlayerAction::Fold;
+    }
+    if s.raises == 1 {
+        let bluff_3bet = (0.3..0.5).contains(&top) && rng.chance(0.06);
+        if top <= 0.09 || bluff_3bet {
+            let three_bet = if eff <= 20.0 {
+                shove
+            } else {
+                raise_to(legal, s.max_bet * 3)
+            };
+            if let Some(a) = three_bet {
+                return a;
+            }
+        }
+        // Closing the action in the big blind is cheap: defend wide.
+        return if equity + 0.04 >= s.pot_odds {
+            PlayerAction::Call
+        } else {
+            PlayerAction::Fold
+        };
+    }
+    if top <= 0.04 {
+        return shove.unwrap_or(PlayerAction::Call);
+    }
+    if top <= 0.2 && equity >= s.pot_odds + 0.02 {
         return PlayerAction::Call;
     }
     PlayerAction::Fold
 }
 
-/// Short-stacked preflop play.
-fn push_or_fold(s: &Situation, legal: &LegalActions, equity: f64, rng: &mut Rng) -> PlayerAction {
-    let shove_at = if s.effective_bb <= 6.0 {
-        0.42
-    } else if s.effective_bb <= 9.0 {
-        0.47
-    } else {
-        0.52
-    };
-    let all_in = legal
-        .raise
-        .as_ref()
-        .map(|r| PlayerAction::RaiseTo { amount: r.max_to });
+fn postflop(v: &PlayerView, s: &Situation, legal: &LegalActions, rng: &mut Rng) -> PlayerAction {
+    let equity = equity(v.hole, &v.board, opponent_range(v), ITERATIONS, rng);
+    let draw = v.street != Street::River && strong_draw(v.hole, &v.board);
+    let street = v.street;
+
     if legal.check {
-        return match all_in {
-            Some(a) if equity >= shove_at + 0.06 || rng.chance(0.05) => a,
-            _ => PlayerAction::Check,
+        if equity >= 0.85 {
+            if street == Street::Flop && equity >= 0.9 && rng.chance(0.15) {
+                return PlayerAction::Check; // trap
+            }
+            let frac = if street == Street::River {
+                rng_frac(rng, 0.6, 0.9)
+            } else {
+                rng_frac(rng, 0.6, 0.85)
+            };
+            return sized(legal, s, frac, PlayerAction::Check);
+        }
+        if equity >= 0.66 {
+            if rng.chance(0.9) {
+                return sized(legal, s, rng_frac(rng, 0.5, 0.75), PlayerAction::Check);
+            }
+            return PlayerAction::Check;
+        }
+        if draw {
+            let p = if street == Street::Flop { 0.5 } else { 0.35 };
+            if rng.chance(p) {
+                return sized(legal, s, rng_frac(rng, 0.5, 0.7), PlayerAction::Check);
+            }
+            return PlayerAction::Check;
+        }
+        if equity >= 0.5 {
+            let p = if s.was_aggressor && street == Street::Flop {
+                0.65
+            } else {
+                0.45
+            };
+            if rng.chance(p) {
+                return sized(legal, s, rng_frac(rng, 0.33, 0.5), PlayerAction::Check);
+            }
+            return PlayerAction::Check;
+        }
+        let bluff = match (street, s.was_aggressor) {
+            (Street::Flop, true) => 0.3,
+            (Street::Flop, false) => 0.08,
+            (Street::Turn, true) => 0.15,
+            (Street::Turn, false) => 0.06,
+            _ if s.opponent_checked => 0.12,
+            _ => 0.05,
         };
+        if rng.chance(bluff) {
+            let frac = if street == Street::River {
+                rng_frac(rng, 0.66, 1.0)
+            } else {
+                rng_frac(rng, 0.5, 0.75)
+            };
+            return sized(legal, s, frac, PlayerAction::Check);
+        }
+        return PlayerAction::Check;
     }
-    if s.aggressive_actions_this_street == 0 {
-        // Unopened small blind.
-        return match all_in {
-            Some(a) if equity >= shove_at => a,
-            _ if equity >= shove_at => PlayerAction::Call,
-            _ => PlayerAction::Fold,
-        };
+
+    // Facing a bet.
+    if equity >= 0.8 && s.raises < 3 && rng.chance(0.65) {
+        return sized(legal, s, rng_frac(rng, 0.7, 0.9), PlayerAction::Call);
     }
-    if equity >= 0.6 {
-        return all_in.unwrap_or(PlayerAction::Call);
+    if equity >= 0.7 && s.raises < 2 && rng.chance(0.35) {
+        return sized(legal, s, rng_frac(rng, 0.6, 0.8), PlayerAction::Call);
     }
-    if equity >= s.pot_odds + 0.03 {
-        PlayerAction::Call
-    } else {
-        PlayerAction::Fold
+    if draw && street == Street::Flop && s.raises < 2 && rng.chance(0.12) {
+        return sized(legal, s, 0.7, PlayerAction::Call);
     }
+    let implied = if draw { 0.06 } else { 0.0 };
+    let margin = if legal.call_is_all_in { 0.03 } else { 0.01 };
+    if equity + implied >= s.pot_odds + margin {
+        return PlayerAction::Call;
+    }
+    if s.raises == 1 && street != Street::River && rng.chance(0.025) {
+        return sized(legal, s, 0.75, PlayerAction::Fold);
+    }
+    PlayerAction::Fold
 }
 
 fn rng_frac(rng: &mut Rng, lo: f64, hi: f64) -> f64 {
@@ -187,6 +345,13 @@ fn rng_frac(rng: &mut Rng, lo: f64, hi: f64) -> f64 {
 /// raise is legal.
 fn sized(legal: &LegalActions, s: &Situation, frac: f64, fallback: PlayerAction) -> PlayerAction {
     let pot_after_call = (s.pot_total + s.to_call) as f64;
+    // In small pots a third of the pot is below the minimum bet; go bigger
+    // rather than always betting exactly the minimum.
+    let frac = if pot_after_call <= 3.0 * s.bb as f64 {
+        frac.max(0.6)
+    } else {
+        frac
+    };
     let to = s.max_bet + (pot_after_call * frac).round() as u32;
     raise_to(legal, to).unwrap_or(fallback)
 }
@@ -196,14 +361,40 @@ fn raise_to(legal: &LegalActions, to: u32) -> Option<PlayerAction> {
     // Round to a multiple of 5 so sizes look like a person chose them.
     let mut amount = (to.saturating_add(2) / 5 * 5).clamp(r.min_to, r.max_to);
     // Don't leave a pointless sliver behind: commit when most of the stack goes in.
-    if amount * 10 >= r.max_to * 7 {
+    if amount * 5 >= r.max_to * 4 {
         amount = r.max_to;
     }
     Some(PlayerAction::RaiseTo { amount })
 }
 
-/// Fraction of starting hands the opponent is assumed to hold, given how
-/// aggressively they have played this hand.
+/// A flush draw or an open-ended straight draw that uses a hole card.
+fn strong_draw(hole: [Card; 2], board: &[Card]) -> bool {
+    if board.len() >= 5 {
+        return false;
+    }
+    let all: Vec<Card> = hole.iter().chain(board).copied().collect();
+    let flush_draw = hole
+        .iter()
+        .any(|h| all.iter().filter(|c| c.suit() == h.suit()).count() == 4);
+    // Ranks as a bitmask with the ace also low (bit 0); deuce is bit 1.
+    let bits = |cards: &[Card]| {
+        cards.iter().fold(0u16, |m, c| {
+            let m = m | 1 << (c.rank() + 1);
+            if c.rank() == 12 { m | 1 } else { m }
+        })
+    };
+    let ranks = bits(&all);
+    let board_ranks = bits(board);
+    let made_straight = (0..=9).any(|lo| ranks >> lo & 0x1F == 0x1F);
+    let open_ended = (1..=9).any(|lo| {
+        let four = 0xFu16 << lo;
+        ranks & four == four && board_ranks & four != four
+    });
+    flush_draw || open_ended && !made_straight
+}
+
+/// Fraction of the opponent's starting hands still assumed possible, given
+/// how aggressively they have played this hand.
 fn opponent_range(v: &PlayerView) -> f64 {
     let opp = v.me.other();
     let aggression = v
@@ -231,7 +422,9 @@ fn opponent_range(v: &PlayerView) -> f64 {
         range = range.min(0.75);
     }
     if opp_all_in {
-        range = range.min(0.4);
+        // A preflop open-shove at short stacks is wide; later shoves less so.
+        let preflop_open_shove = aggression == 1 && v.board.is_empty();
+        range = range.min(if preflop_open_shove { 0.55 } else { 0.4 });
     }
     range
 }
@@ -256,26 +449,35 @@ fn aggression_frequency(v: &PlayerView) -> f64 {
     (aggressive + 0.3 * PRIOR_WEIGHT) / (voluntary + PRIOR_WEIGHT)
 }
 
-/// Rough preflop strength in `[0, 1]`, used only to rank opponent combos.
-fn preflop_score(a: Card, b: Card) -> f64 {
-    let (hi, lo) = if a.rank() >= b.rank() {
-        (a.rank(), b.rank())
+/// Heads-up preflop equity of a starting hand vs a random hand.
+fn preflop_equity(a: Card, b: Card) -> f64 {
+    let (hi, lo) = (a.rank().max(b.rank()), a.rank().min(b.rank()));
+    let e = if a.suit() == b.suit() && hi != lo {
+        preflop_table::EQUITY[hi as usize][lo as usize]
     } else {
-        (b.rank(), a.rank())
+        preflop_table::EQUITY[lo as usize][hi as usize]
     };
-    if hi == lo {
-        return 0.5 + hi as f64 / 24.0;
+    e as f64
+}
+
+/// Share of all 1326 starting hands at least as strong as `hole`:
+/// about 0.005 for aces, 1.0 for the weakest hand.
+fn top_share(hole: [Card; 2]) -> f64 {
+    let mine = preflop_equity(hole[0], hole[1]);
+    let mut at_least = 0u32;
+    for hi in 0..13usize {
+        for lo in 0..13usize {
+            let (e, combos) = match hi.cmp(&lo) {
+                std::cmp::Ordering::Equal => (preflop_table::EQUITY[hi][hi], 6),
+                std::cmp::Ordering::Greater => (preflop_table::EQUITY[hi][lo], 4),
+                std::cmp::Ordering::Less => (preflop_table::EQUITY[hi][lo], 12),
+            };
+            if e as f64 >= mine {
+                at_least += combos;
+            }
+        }
     }
-    let gap = (hi - lo - 1) as f64;
-    let mut score = (hi as f64 + lo as f64) / 24.0 * 0.6;
-    if a.suit() == b.suit() {
-        score += 0.06;
-    }
-    score += (0.06 - gap * 0.02).max(0.0);
-    if hi == 12 {
-        score += 0.08;
-    }
-    score
+    at_least as f64 / 1326.0
 }
 
 /// Equity of `hole` against an opponent holding a random hand from the top
@@ -290,7 +492,7 @@ fn equity(hole: [Card; 2], board: &[Card], range: f64, iterations: usize, rng: &
     let mut combos: Vec<(f64, Card, Card)> = Vec::with_capacity(deck.len() * deck.len() / 2);
     for i in 0..deck.len() {
         for j in i + 1..deck.len() {
-            combos.push((preflop_score(deck[i], deck[j]), deck[i], deck[j]));
+            combos.push((preflop_equity(deck[i], deck[j]), deck[i], deck[j]));
         }
     }
     combos.sort_by(|x, y| y.0.total_cmp(&x.0));
@@ -298,7 +500,6 @@ fn equity(hole: [Card; 2], board: &[Card], range: f64, iterations: usize, rng: &
     combos.truncate(keep);
 
     let mut total = 0.0;
-    let mut runs = 0usize;
     let mut cards = Vec::with_capacity(7);
     let mut rest = Vec::with_capacity(deck.len());
     for _ in 0..iterations {
@@ -311,154 +512,23 @@ fn equity(hole: [Card; 2], board: &[Card], range: f64, iterations: usize, rng: &
             let j = k + rng.below((rest.len() - k) as u64) as usize;
             rest.swap(k, j);
         }
-        let full_board: Vec<Card> = board
-            .iter()
-            .copied()
-            .chain(rest[..missing].iter().copied())
-            .collect();
-
         cards.clear();
         cards.extend_from_slice(&hole);
-        cards.extend_from_slice(&full_board);
+        cards.extend_from_slice(board);
+        cards.extend_from_slice(&rest[..missing]);
         let mine = hand_value(&cards);
-        cards.clear();
-        cards.extend_from_slice(&[o1, o2]);
-        cards.extend_from_slice(&full_board);
+        cards[0] = o1;
+        cards[1] = o2;
         let theirs = hand_value(&cards);
         total += match mine.cmp(&theirs) {
             std::cmp::Ordering::Greater => 1.0,
             std::cmp::Ordering::Equal => 0.5,
             std::cmp::Ordering::Less => 0.0,
         };
-        runs += 1;
     }
-    total / runs as f64
+    total / iterations as f64
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use poker_core::card::cards;
-    use poker_core::{Match, MatchOutcome, Phase, Seat};
-
-    fn c2(s: &str) -> [Card; 2] {
-        let v = cards(s);
-        [v[0], v[1]]
-    }
-
-    #[test]
-    fn equity_sanity() {
-        let mut rng = Rng::new(3);
-        let aa = equity(c2("As Ah"), &[], 1.0, 4000, &mut rng);
-        let trash = equity(c2("7d 2c"), &[], 1.0, 4000, &mut rng);
-        assert!((0.82..0.88).contains(&aa), "AA vs random ≈ 0.85, got {aa}");
-        assert!(
-            (0.28..0.38).contains(&trash),
-            "72o vs random ≈ 0.32, got {trash}"
-        );
-        let nuts = equity(c2("As Ks"), &cards("Qs Js Ts 2d 3c"), 1.0, 500, &mut rng);
-        assert_eq!(nuts, 1.0);
-        // Narrower (stronger) range lowers a medium hand's equity.
-        let wide = equity(c2("9d 8d"), &[], 1.0, 4000, &mut rng);
-        let tight = equity(c2("9d 8d"), &[], 0.2, 4000, &mut rng);
-        assert!(tight < wide - 0.05, "{tight} vs {wide}");
-    }
-
-    type Policy = fn(&PlayerView, &mut Rng) -> PlayerAction;
-
-    fn calling_station(v: &PlayerView, _: &mut Rng) -> PlayerAction {
-        if v.legal.as_ref().unwrap().check {
-            PlayerAction::Check
-        } else {
-            PlayerAction::Call
-        }
-    }
-
-    fn random_player(v: &PlayerView, rng: &mut Rng) -> PlayerAction {
-        let l = v.legal.as_ref().unwrap();
-        let roll = rng.unit();
-        if let Some(r) = &l.raise
-            && roll < 0.25
-        {
-            let span = (r.max_to - r.min_to) as u64 + 1;
-            return PlayerAction::RaiseTo {
-                amount: r.min_to + rng.below(span) as u32,
-            };
-        }
-        if l.fold && roll > 0.8 {
-            return PlayerAction::Fold;
-        }
-        if l.check {
-            PlayerAction::Check
-        } else {
-            PlayerAction::Call
-        }
-    }
-
-    /// Returns (bot wins, bot losses, average chips won) over `matches` matches.
-    fn play(opponent: Policy, matches: u64) -> (u32, u32, f64) {
-        let (mut wins, mut losses) = (0, 0);
-        let mut chips = 0i64;
-        for seed in 0..matches {
-            let mut m = Match::new(seed * 7919 + 1);
-            let mut rng = Rng::new(seed);
-            while m.phase != Phase::MatchOver {
-                match m.phase {
-                    Phase::InHand => {
-                        let seat = m.hand.to_act.unwrap();
-                        let view = m.view(seat);
-                        let action = match seat {
-                            Seat::Bot => decide(&view, Personality::Standard, m.decision_seed()),
-                            Seat::Human => opponent(&view, &mut rng),
-                        };
-                        m.apply(seat, action)
-                            .expect("bot and test policies only play legal actions");
-                    }
-                    _ => m.next_hand().unwrap(),
-                }
-            }
-            chips += m.stacks[Seat::Bot.idx()] as i64 - 600;
-            match m.result.unwrap().outcome {
-                MatchOutcome::Loss => wins += 1,
-                MatchOutcome::Win => losses += 1,
-                MatchOutcome::Draw => {}
-            }
-        }
-        (wins, losses, chips as f64 / matches as f64)
-    }
-
-    #[test]
-    fn beats_simple_opponents() {
-        // Eight-hand matches are noisy; these margins hold with a wide berth.
-        let (w, l, chips) = play(calling_station, 200);
-        assert!(
-            w * 2 > l * 3 && chips > 100.0,
-            "vs calling station: {w}/{l}, {chips:+.0} chips"
-        );
-        let (w, l, chips) = play(random_player, 200);
-        assert!(
-            w * 2 > l * 3 && chips > 100.0,
-            "vs random player: {w}/{l}, {chips:+.0} chips"
-        );
-    }
-
-    #[test]
-    fn tutorial_bot_is_passive() {
-        let mut m = Match::new_tutorial();
-        m.apply(Seat::Human, PlayerAction::RaiseTo { amount: 60 })
-            .unwrap();
-        let a = decide(&m.view(Seat::Bot), Personality::Tutorial, 0);
-        assert_eq!(a, PlayerAction::Call);
-    }
-
-    #[test]
-    fn decisions_are_reproducible() {
-        let m = Match::new(42);
-        let seat = m.hand.to_act.unwrap();
-        let v = m.view(seat);
-        assert_eq!(
-            decide(&v, Personality::Standard, m.decision_seed()),
-            decide(&v, Personality::Standard, m.decision_seed())
-        );
-    }
-}
+#[path = "tests.rs"]
+mod tests;

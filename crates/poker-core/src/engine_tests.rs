@@ -5,7 +5,7 @@ const H: Seat = Seat::Human;
 const B: Seat = Seat::Bot;
 
 /// A hand with chosen stacks, button and deck (`h0 b0 h1 b1 flop turn river`).
-fn setup(stacks: [u32; 2], button: Seat, number: u8, deck: &str) -> Match {
+pub(crate) fn setup(stacks: [u32; 2], button: Seat, number: u8, deck: &str) -> Match {
     let mut m = Match::empty("test".into(), MatchKind::Standard, Rng::new(1));
     m.stacks = stacks;
     m.start_hand(number, button, Some(parse_cards(deck)));

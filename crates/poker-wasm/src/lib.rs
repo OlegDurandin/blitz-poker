@@ -10,7 +10,10 @@
 //! 3. Read the response from `out_ptr()`.
 
 use bot::Personality;
-use poker_core::{EngineError, Match, MatchKind, PlayerAction, PlayerView, Seat};
+use poker_core::{
+    EngineError, HISTORY_SCHEMA_VERSION, HandRecord, Match, MatchKind, PlayerAction, PlayerView,
+    ReplayFrame, Seat, replay,
+};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 
@@ -35,6 +38,14 @@ enum Request {
     },
     Next {
         state: Box<Match>,
+    },
+    /// The human's hand records for archiving, including an unfinished hand.
+    History {
+        state: Box<Match>,
+    },
+    /// Step-by-step public table states of one archived hand.
+    Replay {
+        hand: Box<HandRecord>,
     },
 }
 
@@ -67,6 +78,25 @@ fn fail(code: &str, message: String) -> String {
     .expect("error serializes")
 }
 
+#[derive(Serialize)]
+struct HistoryResponse {
+    ok: bool,
+    schema: u32,
+    hands: Vec<HandRecord>,
+}
+
+#[derive(Serialize)]
+struct ReplayResponse {
+    ok: bool,
+    frames: Vec<ReplayFrame>,
+}
+
+/// Brings an older compatible snapshot up to date, then checks it.
+fn load(state: &mut Match) -> Result<(), EngineError> {
+    state.upgrade();
+    state.validate()
+}
+
 fn run(request: Request) -> Result<(Match, Option<PlayerAction>), EngineError> {
     match request {
         Request::NewMatch { seed } => {
@@ -75,17 +105,17 @@ fn run(request: Request) -> Result<(Match, Option<PlayerAction>), EngineError> {
             Ok((Match::new(seed), None))
         }
         Request::NewTutorial => Ok((Match::new_tutorial(), None)),
-        Request::View { state } => {
-            state.validate()?;
+        Request::View { mut state } => {
+            load(&mut state)?;
             Ok((*state, None))
         }
         Request::Act { mut state, action } => {
-            state.validate()?;
+            load(&mut state)?;
             state.apply(Seat::Human, action)?;
             Ok((*state, None))
         }
         Request::BotAct { mut state } => {
-            state.validate()?;
+            load(&mut state)?;
             let personality = match state.kind {
                 MatchKind::Standard => Personality::Standard,
                 MatchKind::Tutorial => Personality::Tutorial,
@@ -95,10 +125,11 @@ fn run(request: Request) -> Result<(Match, Option<PlayerAction>), EngineError> {
             Ok((*state, Some(action)))
         }
         Request::Next { mut state } => {
-            state.validate()?;
+            load(&mut state)?;
             state.next_hand()?;
             Ok((*state, None))
         }
+        Request::History { .. } | Request::Replay { .. } => unreachable!("handled in `handle`"),
     }
 }
 
@@ -107,6 +138,27 @@ pub fn handle(request: &str) -> String {
     let request: Request = match serde_json::from_str(request) {
         Ok(r) => r,
         Err(e) => return fail("bad_request", e.to_string()),
+    };
+    let request = match request {
+        Request::History { mut state } => {
+            return match load(&mut state) {
+                Ok(()) => serde_json::to_string(&HistoryResponse {
+                    ok: true,
+                    schema: HISTORY_SCHEMA_VERSION,
+                    hands: state.hand_records(Seat::Human, true),
+                })
+                .expect("history serializes"),
+                Err(e) => fail(e.code(), e.to_string()),
+            };
+        }
+        Request::Replay { hand } => {
+            return match replay(&hand) {
+                Ok(frames) => serde_json::to_string(&ReplayResponse { ok: true, frames })
+                    .expect("frames serialize"),
+                Err(e) => fail("corrupt_save", e.0.to_string()),
+            };
+        }
+        other => other,
     };
     match run(request) {
         Ok((state, bot_action)) => {
@@ -227,6 +279,50 @@ mod tests {
             send(json!({"cmd": "view", "state": cheat}))["error"]["code"],
             "corrupt_save"
         );
+    }
+
+    #[test]
+    fn history_and_replay_through_json() {
+        let start = send(json!({"cmd": "new_match", "seed": "0000000000000042"}));
+        let state = start["state"].clone();
+        let fold = if start["view"]["to_act"] == "human" {
+            send(json!({"cmd": "act", "state": state, "action": {"type": "fold"}}))
+        } else {
+            send(json!({"cmd": "bot_act", "state": state}))
+        };
+        let next = send(json!({"cmd": "next", "state": fold["state"]}));
+        let h = send(json!({"cmd": "history", "state": next["state"]}));
+        assert_eq!(h["ok"], true, "{h}");
+        assert_eq!(h["schema"], 1);
+        let hands = h["hands"].as_array().unwrap();
+        assert_eq!(hands.len(), 2, "finished hand 1 plus hand 2 in progress");
+        assert!(hands[0]["outcome"].is_object());
+        assert!(hands[1]["outcome"].is_null());
+
+        let r = send(json!({"cmd": "replay", "hand": hands[0]}));
+        assert_eq!(r["ok"], true, "{r}");
+        let frames = r["frames"].as_array().unwrap();
+        assert_eq!(frames[0]["event"]["type"], "start");
+        assert_eq!(frames.last().unwrap()["event"]["type"], "award");
+
+        let mut broken = hands[0].clone();
+        broken["start_stacks"] = json!([1, 1]);
+        let r = send(json!({"cmd": "replay", "hand": broken}));
+        assert_eq!(r["error"]["code"], "corrupt_save");
+
+        // A 1.0 save: history entries without start_stacks / holes.
+        let mut old = next["state"].clone();
+        for entry in old["history"].as_array_mut().unwrap() {
+            entry.as_object_mut().unwrap().remove("start_stacks");
+            entry.as_object_mut().unwrap().remove("holes");
+        }
+        let loaded = send(json!({"cmd": "view", "state": old}));
+        assert_eq!(loaded["ok"], true, "{loaded}");
+        assert_eq!(
+            loaded["view"]["history"][0]["start_stacks"],
+            json!([600, 600])
+        );
+        assert!(loaded["view"]["history"][0]["hole"].is_null());
     }
 
     #[test]

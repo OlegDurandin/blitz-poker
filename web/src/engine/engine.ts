@@ -1,7 +1,7 @@
 // Loads the Rust engine (crates/poker-wasm) and exposes typed commands.
 // ABI: alloc(len) → ptr, call(ptr, len) → response length, out_ptr() → response.
 
-import type { EngineResult, MatchState, PlayerAction } from './types';
+import type { EngineResult, HandRecord, HistoryResult, MatchState, PlayerAction, ReplayResult } from './types';
 
 interface Exports {
   memory: WebAssembly.Memory;
@@ -30,7 +30,7 @@ export async function initEngine(source?: BufferSource): Promise<void> {
   wasm = instance.exports as unknown as Exports;
 }
 
-function call(request: object): EngineResult {
+function call<T = EngineResult>(request: object): T {
   if (!wasm) throw new Error('engine not initialised');
   const input = encoder.encode(JSON.stringify(request));
   const ptr = wasm.alloc(input.length);
@@ -38,7 +38,7 @@ function call(request: object): EngineResult {
   const len = wasm.call(ptr, input.length);
   // Read after the call: memory may have grown and detached older views.
   const output = new Uint8Array(wasm.memory.buffer, wasm.out_ptr(), len);
-  return JSON.parse(decoder.decode(output)) as EngineResult;
+  return JSON.parse(decoder.decode(output)) as T;
 }
 
 function randomSeed(): string {
@@ -54,4 +54,8 @@ export const engine = {
   act: (state: MatchState, action: PlayerAction) => call({ cmd: 'act', state, action }),
   botAct: (state: MatchState) => call({ cmd: 'bot_act', state }),
   next: (state: MatchState) => call({ cmd: 'next', state }),
+  /** The human's hand records, including a hand still in progress. */
+  history: (state: MatchState) => call<HistoryResult>({ cmd: 'history', state }),
+  /** Public table states, event by event; never mutates any match. */
+  replay: (hand: HandRecord) => call<ReplayResult>({ cmd: 'replay', hand }),
 };

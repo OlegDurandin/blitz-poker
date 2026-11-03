@@ -8,6 +8,7 @@
 
 use crate::card::{Card, cards as parse_cards, full_deck};
 use crate::eval::{BestHand, Category, HandValue, best_hand};
+use crate::history::HandRecord;
 use crate::rng::{Rng, mix};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -63,7 +64,7 @@ pub enum Street {
 }
 
 impl Street {
-    fn board_len(self) -> usize {
+    pub fn board_len(self) -> usize {
         match self {
             Street::Preflop => 0,
             Street::Flop => 3,
@@ -72,7 +73,7 @@ impl Street {
         }
     }
 
-    fn next(self) -> Street {
+    pub fn next(self) -> Street {
         match self {
             Street::Preflop => Street::Flop,
             Street::Flop => Street::Turn,
@@ -203,12 +204,22 @@ pub struct HandOutcome {
     pub runout_from: Option<usize>,
 }
 
+/// Internal record of a finished hand. It holds both players' hole cards, so
+/// it never leaves the engine as is: clients get [`HandRecord`]s projected for
+/// one seat (see `history.rs`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandSummary {
     pub number: u8,
     pub button: Seat,
     pub sb: u32,
     pub bb: u32,
+    /// Stacks before the blinds. Absent in 1.0 saves; restored by [`Match::upgrade`].
+    #[serde(default)]
+    pub start_stacks: [u32; 2],
+    /// `[human, bot]` hole cards. Absent in 1.0 saves.
+    #[serde(default)]
+    pub holes: Option<[[Card; 2]; 2]>,
+    /// Only the cards that were actually dealt face up.
     pub board: Vec<Card>,
     pub actions: Vec<ActionRecord>,
     pub outcome: HandOutcome,
@@ -296,7 +307,7 @@ pub struct Hand {
     pub bets: [u32; 2],
     /// Chips collected from finished betting rounds.
     pub pot: u32,
-    start_stacks: [u32; 2],
+    pub(crate) start_stacks: [u32; 2],
     pub to_act: Option<Seat>,
     acted: [bool; 2],
     /// Size of the last full bet/raise increment: the minimum next raise.
@@ -586,6 +597,8 @@ impl Match {
             button: self.hand.button,
             sb: self.hand.sb,
             bb: self.hand.bb,
+            start_stacks: start,
+            holes: Some(Seat::BOTH.map(|s| self.hand.hole(s))),
             board: self.hand.board().to_vec(),
             actions: self.hand.actions.clone(),
             outcome,
@@ -758,6 +771,19 @@ impl Match {
         self.phase = Phase::MatchOver;
     }
 
+    /// Fills fields that older, still compatible snapshots don't carry.
+    pub fn upgrade(&mut self) {
+        if self.history.iter().any(|h| h.start_stacks == [0, 0]) {
+            let mut stacks = [STARTING_STACK; 2];
+            for h in &mut self.history {
+                h.start_stacks = stacks;
+                for (stack, net) in stacks.iter_mut().zip(h.outcome.net) {
+                    *stack = stack.saturating_add_signed(net);
+                }
+            }
+        }
+    }
+
     /// Sanity checks for a snapshot loaded from storage.
     pub fn validate(&self) -> Result<(), EngineError> {
         if self.schema != SCHEMA_VERSION {
@@ -824,7 +850,7 @@ impl Match {
             is_final_hand: self.is_final_hand(),
             next_blinds: (!self.is_final_hand()).then(|| blinds(h.number + 1)),
             result: self.result.clone(),
-            history: self.history.clone(),
+            history: self.hand_records(seat, false),
         }
     }
 }
@@ -858,9 +884,10 @@ pub struct PlayerView {
     pub is_final_hand: bool,
     pub next_blinds: Option<(u32, u32)>,
     pub result: Option<MatchResult>,
-    pub history: Vec<HandSummary>,
+    /// Finished hands of this match, as `me` is allowed to see them.
+    pub history: Vec<HandRecord>,
 }
 
 #[cfg(test)]
 #[path = "engine_tests.rs"]
-mod tests;
+pub(crate) mod tests;

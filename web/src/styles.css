@@ -1321,6 +1321,168 @@ p {
   font-weight: 700;
 }
 
+.screen-header__titles {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.screen-header__subtitle {
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.history__empty {
+  padding: 24px 0;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.history__item--unfinished {
+  box-shadow: inset 0 0 0 1.5px var(--border);
+  background: transparent;
+}
+
+.history__main .history__cards {
+  margin-top: 4px;
+}
+
+.history__chevron {
+  color: var(--text-secondary);
+  font-size: 24px;
+  line-height: 1;
+}
+
+.history__score {
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ---------- Stats ---------- */
+
+.stats-card__more {
+  margin-top: 10px;
+  min-height: 44px;
+}
+
+.stats-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 14px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.stats-list > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 32px;
+  align-items: center;
+}
+
+.stats-list dt {
+  color: var(--text-secondary);
+}
+
+.stats-list dd {
+  margin: 0;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.stats__note {
+  margin-top: 10px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.stats__heading {
+  margin: 20px 0 10px;
+  font-size: 18px;
+}
+
+.stats__warning {
+  margin-bottom: 10px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: #4a2323;
+  color: #ffd9d9;
+  font-size: 14px;
+}
+
+/* ---------- Hand replay ---------- */
+
+.replay {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+  padding: 0 var(--gutter);
+}
+
+/* Like the live table's HUD: the header scrolls away instead of covering the bot's cards. */
+.replay .screen-header {
+  position: static;
+  min-height: 50px;
+}
+
+.replay .seat--bot {
+  margin-top: 10px;
+}
+
+.replay .felt {
+  min-height: 170px;
+}
+
+.replay__no-cards {
+  max-width: 160px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  text-align: right;
+}
+
+.replay__dock {
+  height: auto;
+  min-height: calc(var(--dock-h) + env(safe-area-inset-bottom));
+}
+
+.replay__caption {
+  min-height: 48px;
+  padding: 6px 12px;
+  font-size: 14px;
+  line-height: 1.3;
+}
+
+.replay__controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.replay__btn {
+  min-height: 52px;
+  min-width: 48px;
+  padding: 0 10px;
+  font-size: 16px;
+}
+
+.replay__btn--wide {
+  flex: 1;
+}
+
+.replay__counter {
+  min-width: 52px;
+  color: var(--text-secondary);
+  font-size: 14px;
+  font-weight: 700;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
 .rules-layer {
   position: fixed;
   inset: 0;
@@ -1484,6 +1646,15 @@ p {
   }
   .stats-card__grid dd {
     font-size: 20px;
+  }
+  .replay__btn {
+    min-width: 44px;
+    padding: 0 6px;
+    font-size: 15px;
+  }
+  .replay__counter {
+    min-width: 44px;
+    font-size: 13px;
   }
 }
 

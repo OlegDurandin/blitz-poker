@@ -3,12 +3,14 @@ import { ConfirmDialog } from './components/Dialog';
 import { PauseMenu } from './components/PauseMenu';
 import { engine, initEngine } from './engine/engine';
 import { track } from './game/analytics';
-import { completedMatches, storage } from './game/storage';
+import { completedMatches, storage, type ArchiveLoad } from './game/storage';
 import { useGame } from './game/useGame';
 import { History } from './screens/History';
 import { Home } from './screens/Home';
+import { Replay } from './screens/Replay';
 import { Result } from './screens/Result';
 import { Rules } from './screens/Rules';
+import { Stats, matchDate, matchLabel } from './screens/Stats';
 import { EngineError, SaveError } from './screens/SaveError';
 import { Table } from './screens/Table';
 
@@ -17,11 +19,16 @@ type Screen =
   | { name: 'home' }
   | { name: 'table' }
   | { name: 'result' }
-  | { name: 'history' }
+  | { name: 'stats' }
+  | { name: 'hands'; matchId: string; from: HistorySource }
+  | { name: 'replay'; matchId: string; hand: number; from: HistorySource }
   | { name: 'save_error'; code: string }
   | { name: 'engine_error' };
 
 type Confirm = 'quit' | 'restart' | null;
+
+/** Where the hand list was opened from: the just-finished match or the archive. */
+type HistorySource = 'result' | 'stats';
 
 export function App() {
   const [screen, setScreen] = useState<Screen>({ name: 'loading' });
@@ -29,6 +36,7 @@ export function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirm, setConfirm] = useState<Confirm>(null);
   const [justFinished, setJustFinished] = useState(false);
+  const [archive, setArchive] = useState<ArchiveLoad | null>(null);
   const game = useGame({ paused: menuOpen || rulesOpen || confirm !== null });
 
   const boot = useCallback(() => {
@@ -111,11 +119,30 @@ export function App() {
 
   const view = game.session?.view;
 
+  const openStats = () => {
+    setArchive(storage.loadArchive());
+    track('match_history_opened', { source: 'home' });
+    setScreen({ name: 'stats' });
+  };
+
+  /** Hands of a match: the live result for 'result', the archive for 'stats'. */
+  const handsFor = (matchId: string, from: HistorySource) => {
+    if (from === 'result') return view?.match_id === matchId ? view.history : null;
+    return archive?.matches.find((m) => m.id === matchId)?.hands ?? null;
+  };
+
+  const historyScreen = screen.name === 'hands' || screen.name === 'replay' ? screen : null;
+  const historyHands = historyScreen ? handsFor(historyScreen.matchId, historyScreen.from) : null;
+  const replayHand =
+    screen.name === 'replay' ? (historyHands?.find((h) => h.number === screen.hand) ?? null) : null;
+
   // Never leave the user on an empty screen without a way back.
   const orphaned =
     (screen.name === 'table' && !view) ||
     (screen.name === 'result' && !view?.result) ||
-    (screen.name === 'history' && !view);
+    (screen.name === 'stats' && !archive) ||
+    (screen.name === 'hands' && !historyHands) ||
+    (screen.name === 'replay' && !replayHand);
   useEffect(() => {
     if (orphaned) setScreen({ name: 'home' });
   }, [orphaned]);
@@ -157,6 +184,7 @@ export function App() {
           onContinueTutorial={onContinueTutorial}
           onSkipTutorial={skipTutorial}
           onRules={() => setRulesOpen(true)}
+          onStats={openStats}
         />
       );
       break;
@@ -186,7 +214,7 @@ export function App() {
           }}
           onHistory={() => {
             track('hand_history_opened', { source: 'result' });
-            setScreen({ name: 'history' });
+            setScreen({ name: 'hands', matchId: view.match_id, from: 'result' });
           }}
           onHome={() => {
             game.leaveFinished();
@@ -196,9 +224,57 @@ export function App() {
         />
       ) : null;
       break;
-    case 'history':
-      content = view ? <History hands={view.history} onBack={() => setScreen({ name: 'result' })} /> : null;
+    case 'stats':
+      content = archive ? (
+        <Stats
+          stats={game.stats}
+          matches={archive.matches}
+          skipped={archive.skipped}
+          onBack={goHome}
+          onOpenMatch={(m) => {
+            track('hand_history_opened', { source: 'stats' });
+            setScreen({ name: 'hands', matchId: m.id, from: 'stats' });
+          }}
+        />
+      ) : null;
       break;
+    case 'hands': {
+      const { matchId, from } = screen;
+      const archived = archive?.matches.find((m) => m.id === matchId);
+      const subtitle =
+        from === 'result' && view?.result
+          ? `Итог: ${view.result.final_stacks[0]} : ${view.result.final_stacks[1]}`
+          : archived
+            ? `${matchLabel(archived)} · ${matchDate(archived)}`
+            : undefined;
+      content = historyHands ? (
+        <History
+          title="История раздач"
+          subtitle={subtitle}
+          hands={historyHands}
+          onBack={() => setScreen(from === 'result' ? { name: 'result' } : { name: 'stats' })}
+          onOpen={(h) => {
+            track('hand_replay_opened', { hand_no: h.number, source: from, finished: h.outcome !== null });
+            setScreen({ name: 'replay', matchId, hand: h.number, from });
+          }}
+        />
+      ) : null;
+      break;
+    }
+    case 'replay': {
+      const { matchId, from } = screen;
+      content = replayHand ? (
+        <Replay
+          hand={replayHand}
+          load={game.replayHand}
+          onClose={({ steps, frames, reachedEnd }) => {
+            track('hand_replay_stepped', { steps, frames, reached_end: reachedEnd });
+            setScreen({ name: 'hands', matchId, from });
+          }}
+        />
+      ) : null;
+      break;
+    }
   }
 
   return (

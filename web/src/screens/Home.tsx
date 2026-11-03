@@ -12,10 +12,11 @@ interface Props {
   onContinueTutorial: () => void;
   onSkipTutorial: () => void;
   onRules: () => void;
+  onStats: () => void;
 }
 
 export function Home(p: Props) {
-  const completed = completedMatches(p.stats);
+  const played = completedMatches(p.stats) + p.stats.abandoned;
   return (
     <main className="home">
       <header className="brand">
@@ -60,7 +61,7 @@ export function Home(p: Props) {
         </button>
       </div>
 
-      {completed > 0 ? (
+      {played > 0 ? (
         <section className="stats-card" aria-label="Моя статистика">
           <h2 className="stats-card__title">Моя статистика</h2>
           <dl className="stats-card__grid">
@@ -81,6 +82,9 @@ export function Home(p: Props) {
               <dd>{p.stats.bestStreak}</dd>
             </div>
           </dl>
+          <button className="btn btn--ghost btn--block stats-card__more" onClick={p.onStats}>
+            Статистика и история
+          </button>
         </section>
       ) : (
         <p className="home__tagline">Играй в своём темпе. Соперник уже готов.</p>

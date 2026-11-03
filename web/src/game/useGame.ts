@@ -4,12 +4,15 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { engine } from '../engine/engine';
-import type { EngineResult, PlayerAction, PlayerView } from '../engine/types';
+import type { EngineResult, MatchState, PlayerAction, PlayerView } from '../engine/types';
 import { track } from './analytics';
 import {
+  ARCHIVE_VERSION,
+  matchFacts,
   recordAbandon,
   recordResult,
   storage,
+  type MatchFacts,
   type LoadResult,
   type SessionMeta,
   type Stats,
@@ -33,6 +36,31 @@ function persist(s: Session): boolean {
   if (s.view.kind === 'tutorial') return storage.saveTutorial(saved);
   if (s.view.phase === 'match_over') return storage.clearMatch();
   return storage.saveMatch(saved);
+}
+
+/**
+ * Stores the match in the history archive and returns facts for the stats.
+ * A failed write never blocks the game: stats still count the match.
+ */
+function archiveMatch(state: MatchState, view: PlayerView, meta: SessionMeta): MatchFacts {
+  const res = engine.history(state);
+  if (!res.ok) {
+    track('persistence_error', { what: 'history', code: res.error.code });
+    return { hands: view.history.length, biggestPot: 0 };
+  }
+  const finished = view.phase === 'match_over';
+  const ok = storage.saveArchived({
+    v: ARCHIVE_VERSION,
+    id: view.match_id,
+    status: finished ? 'completed' : 'abandoned',
+    outcome: finished ? view.result!.outcome : null,
+    startedAt: meta.startedAt,
+    endedAt: Date.now(),
+    finalStacks: finished ? view.result!.final_stacks : view.stacks,
+    hands: res.hands,
+  });
+  if (!ok) track('persistence_error', { what: 'archive' });
+  return matchFacts(res.hands);
 }
 
 function handResult(view: PlayerView): string {
@@ -66,10 +94,18 @@ export function useGame({ paused }: { paused: boolean }) {
     }
     if (prev && view.hand_number !== prev.view.hand_number) nextMeta.handStartedAt = Date.now();
 
+    if (res.bot_action) {
+      // Action mix for tuning the bot; no cards are sent.
+      const a = res.bot_action;
+      track('bot_action_selected', { street: prev?.view.street ?? 'preflop', action: a.type });
+    }
+
     const next: Session = { state: res.state, view, meta: nextMeta };
     sessionRef.current = next;
     setSession(next);
-    setNotice(persist(next) ? null : 'Не удалось сохранить. Повторим');
+    const saved = persist(next);
+    if (!saved) track('persistence_error', { what: 'match' });
+    setNotice(saved ? null : 'Не удалось сохранить. Повторим');
     return next;
   }, []);
 
@@ -129,7 +165,8 @@ export function useGame({ paused }: { paused: boolean }) {
     const next = commit(engine.next(s.state));
     if (next && next.view.phase === 'match_over' && next.view.kind === 'standard') {
       const result = next.view.result!;
-      const updated = recordResult(storage.loadStats(), next.view.match_id, result.outcome);
+      const facts = archiveMatch(next.state, next.view, next.meta);
+      const updated = recordResult(storage.loadStats(), next.view.match_id, result.outcome, facts);
       storage.saveStats(updated);
       setStats(updated);
       track('match_completed', {
@@ -168,8 +205,9 @@ export function useGame({ paused }: { paused: boolean }) {
     setSession(null);
   }, []);
 
-  const abandonView = useCallback((view: PlayerView, reason: string) => {
-    const updated = recordAbandon(storage.loadStats(), view.match_id);
+  const abandonView = useCallback((state: MatchState, view: PlayerView, meta: SessionMeta, reason: string) => {
+    const facts = archiveMatch(state, view, meta);
+    const updated = recordAbandon(storage.loadStats(), view.match_id, facts);
     storage.saveStats(updated);
     setStats(updated);
     storage.clearMatch();
@@ -179,7 +217,7 @@ export function useGame({ paused }: { paused: boolean }) {
   /** "Завершить матч" from the pause menu. */
   const abandon = useCallback(() => {
     const s = sessionRef.current;
-    if (s && s.view.kind === 'standard') abandonView(s.view, 'user_quit');
+    if (s && s.view.kind === 'standard') abandonView(s.state, s.view, s.meta, 'user_quit');
     sessionRef.current = null;
     setSession(null);
   }, [abandonView]);
@@ -189,7 +227,7 @@ export function useGame({ paused }: { paused: boolean }) {
     const loaded = storage.loadMatch();
     if (loaded.kind === 'ok') {
       const res = engine.load(loaded.saved.state);
-      if (res.ok) abandonView(res.view, 'restart');
+      if (res.ok) abandonView(res.state, res.view, loaded.saved.meta, 'restart');
     }
     storage.clearMatch();
   }, [abandonView]);
@@ -198,6 +236,9 @@ export function useGame({ paused }: { paused: boolean }) {
     sessionRef.current = null;
     setSession(null);
   }, []);
+
+  /** Replay only reads an archived record; the live match is untouched. */
+  const replayHand = useCallback((hand: Parameters<typeof engine.replay>[0]) => engine.replay(hand), []);
 
   // Bot turn: short visible "thinking" pause, then one engine call.
   useEffect(() => {
@@ -234,6 +275,7 @@ export function useGame({ paused }: { paused: boolean }) {
     discardSaved,
     leaveFinished,
     retrySave,
+    replayHand,
   };
 }
 
