@@ -4,8 +4,32 @@ use pvp_server::store::Store;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// `pvp-server healthcheck`: exit 0 if this container's server answers
+/// `/health`. For Docker's HEALTHCHECK; the slim image has no curl.
+fn healthcheck() -> ! {
+    use std::io::{Read, Write};
+    let port = std::env::var("PVP_BIND")
+        .ok()
+        .and_then(|b| b.rsplit(':').next().and_then(|p| p.parse::<u16>().ok()))
+        .unwrap_or(8787);
+    let ok = (|| -> std::io::Result<bool> {
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+        let mut s = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(3))?;
+        s.set_read_timeout(Some(Duration::from_secs(3)))?;
+        s.write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")?;
+        let mut out = String::new();
+        s.read_to_string(&mut out)?;
+        Ok(out.starts_with("HTTP/1.1 200") && out.contains("\"ok\":true"))
+    })()
+    .unwrap_or(false);
+    std::process::exit(if ok { 0 } else { 1 });
+}
+
 #[tokio::main]
 async fn main() {
+    if std::env::args().nth(1).as_deref() == Some("healthcheck") {
+        healthcheck();
+    }
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

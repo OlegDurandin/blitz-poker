@@ -1,0 +1,9 @@
+target
+web
+deploy
+.git
+.env
+.env.*
+*.sqlite
+*.sqlite-*
+*.db

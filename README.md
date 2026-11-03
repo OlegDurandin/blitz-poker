@@ -202,6 +202,15 @@ VK Mini App (игрок B) ─┘                     └─ SQLite: комна�
 
 ### Запуск на VPS
 
+Рабочий вариант — Docker по схеме [bots-server](https://github.com/OlegDurandin/bots-server):
+GitHub Actions (`.github/workflows/docker.yml`) прогоняет тесты и публикует образ
+`ghcr.io/olegdurandin/blitz-pvp:sha-…` (`latest` — только из `main`), а сервер его скачивает:
+`./bots.sh 62.109.4.100 deploy blitz-pvp sha-…`. Адрес — `https://pvp.62-109-4-100.sslip.io`
+(Caddy хоста → `127.0.0.1:8787`), база — `bots/blitz-pvp/data/pvp.db`, её копирует
+ночной `bots-backup`. Клиент берёт адрес из `web/.env.production`.
+
+Без Docker:
+
 1. Соберите сервер: `cargo build -p pvp-server --release`, бинарник будет в `target/release/pvp-server`.
    Если ОС на VPS другая, соберите на нём самом. Нужен Rust, SQLite встроен.
 2. Заполните `/etc/blitz-pvp.env` по образцу `crates/pvp-server/.env.example`: `VK_APP_ID`,
