@@ -27,7 +27,7 @@ pub fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-/// Open rooms a user may host at once.
+/// Rooms with a guest seated that one user may host at once.
 const MAX_HOSTED_ROOMS: usize = 3;
 /// Closed rooms stay in memory this long (late visitors see "closed").
 const CLOSED_IN_MEMORY_MS: u64 = 3_600_000;
@@ -318,13 +318,21 @@ impl Hub {
                     );
                     Ok(Some(id))
                 } else {
+                    // A new invite supersedes this host's empty rooms.
+                    let stale: Vec<String> = st
+                        .rooms
+                        .values()
+                        .filter(|r| r.host.profile.vk_id == vk && r.status == Status::Waiting)
+                        .map(|r| r.id.clone())
+                        .collect();
+                    for id in stale {
+                        let _ = st.rooms.get_mut(&id).expect("room").leave(vk, now);
+                        self.commit(&mut st, &id, now);
+                    }
                     let hosted = st
                         .rooms
                         .values()
-                        .filter(|r| {
-                            r.host.profile.vk_id == vk
-                                && matches!(r.status, Status::Waiting | Status::Ready)
-                        })
+                        .filter(|r| r.host.profile.vk_id == vk && r.status == Status::Ready)
                         .count();
                     if hosted >= MAX_HOSTED_ROOMS {
                         Err((None, RoomError::TooManyRooms))

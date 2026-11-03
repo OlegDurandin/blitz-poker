@@ -514,3 +514,39 @@ async fn match_survives_a_server_restart() {
         let _ = std::fs::remove_file(format!("{db}{ext}"));
     }
 }
+
+/// A host who opens a new invite closes their previous empty room, so stale
+/// rooms never block new ones.
+#[tokio::test]
+async fn new_invite_replaces_an_empty_one() {
+    let s = start(":memory:").await;
+    let mut host = Client::login(s.addr, 1001, "Олег").await;
+    let mut ids = vec![];
+    for i in 0..5 {
+        host.send(json!({ "type": "create_room", "request_id": format!("r{i}") }))
+            .await;
+        ids.push(
+            host.until(|m| m["type"] == "room_created").await["room_id"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+        );
+    }
+    let mut guest = Client::login(s.addr, 2002, "Максим").await;
+    guest
+        .send(json!({ "type": "peek_room", "room_id": ids[0] }))
+        .await;
+    let old = guest.until(|m| m["type"] == "room_preview").await;
+    assert_eq!(
+        (
+            old["preview"]["joinable"].as_bool(),
+            old["preview"]["status"].as_str()
+        ),
+        (Some(false), Some("closed"))
+    );
+    guest
+        .send(json!({ "type": "join_room", "room_id": ids[4] }))
+        .await;
+    guest.snapshot(|r| r["status"] == "ready").await;
+    s.stop();
+}
