@@ -2,8 +2,9 @@ import { useEffect, useMemo, useState } from 'react';
 import { BotAvatar } from '../components/icons';
 import { PlayingCard } from '../components/PlayingCard';
 import { ActionTag, BetChip, DealerButton, Stack } from '../components/TableParts';
-import type { ActionRecord, Card, HandRecord, Opponent, ReplayFrame, ReplayResult, Seat } from '../engine/types';
-import { STREET_NAME, describeHand, kickerNote } from '../game/format';
+import type { ActionRecord, HandRecord, Opponent, ReplayFrame, ReplayResult, Seat } from '../engine/types';
+import { STREET_NAME, describeHand } from '../game/format';
+import { showdownMarks, showdownReason } from '../game/showdown';
 import { botName, opponentInfo } from '../game/opponents';
 
 interface Props {
@@ -51,8 +52,8 @@ function caption(hand: HandRecord, f: ReplayFrame, bot: string): string {
     case 'street':
       return `${STREET_NAME[e.street]}${e.runout ? ' · олл-ин, карты открываются без торговли' : ''} · банк ${bank}`;
     case 'showdown': {
-      const kicker = kickerNote(e.hands[0], e.hands[1]);
-      return `Вскрытие: вы — ${describeHand(e.hands[0])}, ${bot} — ${describeHand(e.hands[1])}${kicker ? `. ${kicker}` : ''}`;
+      const winner = hand.outcome?.winner ?? null;
+      return `Вскрытие: вы — ${describeHand(e.hands[0])}, ${bot} — ${describeHand(e.hands[1])}. ${showdownReason(e.hands, winner)}`;
     }
     case 'award': {
       const stacks = `стеки ${f.stacks[0]} : ${f.stacks[1]}`;
@@ -134,12 +135,7 @@ export function Replay({ hand, opponent, load, onClose }: Props) {
 
   const f = frames[index];
   const showdown = f.showdown;
-  const mineBest = new Set<Card>(showdown?.[0].best ?? []);
-  const theirsBest = new Set<Card>(showdown?.[1].best ?? []);
-  const cardProps = (card: Card) =>
-    showdown
-      ? { bestMine: mineBest.has(card), bestTheirs: theirsBest.has(card), dim: !mineBest.has(card) && !theirsBest.has(card) }
-      : {};
+  const cardProps = showdownMarks(showdown);
   const award = f.event.type === 'award' ? f.event : null;
 
   return (

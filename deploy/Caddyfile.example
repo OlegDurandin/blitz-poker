@@ -1,0 +1,5 @@
+# Caddy gets and renews the TLS certificate itself and proxies WebSockets
+# without extra settings. Replace the domain; point its DNS A record at the VPS.
+pvp.example.ru {
+	reverse_proxy 127.0.0.1:8787
+}

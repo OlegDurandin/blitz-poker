@@ -75,7 +75,7 @@ export function describeHand(h: Pick<ShownHand, 'category' | 'best'>): string {
     case 'two_pair':
       return `две пары: ${NOM_PL[r[0]]} и ${NOM_PL[r[2]]}`;
     case 'three_of_a_kind':
-      return `тройка: ${NOM_PL[r[0]]}`;
+      return `три ${GEN[r[0]]}`;
     case 'straight':
       return `стрит до ${GEN[r[0]]}`;
     case 'flush':
@@ -83,7 +83,7 @@ export function describeHand(h: Pick<ShownHand, 'category' | 'best'>): string {
     case 'full_house':
       return `фулл-хаус: ${NOM_PL[r[0]]} и ${NOM_PL[r[3]]}`;
     case 'four_of_a_kind':
-      return `каре: ${NOM_PL[r[0]]}`;
+      return `каре ${GEN_PL[r[0]]}`;
     case 'straight_flush':
       return `стрит-флеш до ${GEN[r[0]]}`;
     case 'royal_flush':

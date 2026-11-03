@@ -18,6 +18,8 @@ interface Props {
   onStats: () => void;
   opponent: Opponent;
   onPickOpponent: () => void;
+  /** "Играть с другом"; absent when no duel server is configured. */
+  onDuel?: () => void;
 }
 
 export function Home(p: Props) {
@@ -60,6 +62,11 @@ export function Home(p: Props) {
         ) : (
           <button className="btn btn--primary btn--hero" onClick={p.onStart}>
             {p.justFinished ? 'Играть снова' : 'Начать игру'}
+          </button>
+        )}
+        {p.onDuel && (
+          <button className="btn btn--secondary btn--hero home__duel" onClick={p.onDuel}>
+            Играть с другом
           </button>
         )}
         <button className="btn btn--ghost btn--block" onClick={p.onRules}>

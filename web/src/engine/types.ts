@@ -4,7 +4,7 @@
 export type Seat = 'human' | 'bot';
 export type Street = 'preflop' | 'flop' | 'turn' | 'river';
 export type Phase = 'in_hand' | 'hand_over' | 'match_over';
-export type MatchKind = 'standard' | 'tutorial';
+export type MatchKind = 'standard' | 'tutorial' | 'duel';
 /** The bot the human plays against (engine `Opponent`). */
 export type Opponent = 'novice' | 'station' | 'tight' | 'alex' | 'aggressor';
 /** Two characters: rank `23456789TJQKA` + suit `shdc`, e.g. "As", "Td". */
@@ -138,6 +138,10 @@ export interface MatchResult {
   hands_won: [number, number];
   ended_early: boolean;
   best_hand: { category: Category; cards: Card[] } | null;
+  /** The other seat's best hand (duels). */
+  opponent_best_hand?: { category: Category; cards: Card[] } | null;
+  /** Who lost by forfeit (timeout, disconnect, surrender); duels only. */
+  forfeit?: Seat | null;
 }
 
 export interface PlayerView {

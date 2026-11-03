@@ -8,6 +8,9 @@ import { track } from './game/analytics';
 import { botName } from './game/opponents';
 import { completedMatches, storage, type ArchiveLoad } from './game/storage';
 import { useGame } from './game/useGame';
+import { PVP_URL, activeRoom, clearRoomFromLocation, roomFromLocation } from './pvp/config';
+import { useDuel } from './pvp/useDuel';
+import { Duel } from './screens/Duel';
 import { History } from './screens/History';
 import { Home } from './screens/Home';
 import { Replay } from './screens/Replay';
@@ -23,6 +26,8 @@ type Screen =
   | { name: 'table' }
   | { name: 'result' }
   | { name: 'stats' }
+  /** `invite`: room id from an invite link; null when this player hosts. */
+  | { name: 'duel'; invite: string | null }
   | { name: 'hands'; matchId: string; from: HistorySource }
   | { name: 'replay'; matchId: string; hand: number; from: HistorySource }
   | { name: 'save_error'; code: string }
@@ -43,6 +48,7 @@ export function App() {
   const [opponent, setOpponent] = useState<Opponent>(() => storage.loadOpponent());
   const [pickerOpen, setPickerOpen] = useState(false);
   const game = useGame({ paused: menuOpen || rulesOpen || confirm !== null });
+  const duel = useDuel(screen.name === 'duel');
 
   const boot = useCallback(() => {
     setScreen({ name: 'loading' });
@@ -53,6 +59,13 @@ export function App() {
           has_saved_match: saved.kind === 'ok',
           completed_matches: completedMatches(storage.loadStats()),
         });
+        // An invite link opens its room directly; a saved Solo match stays as it is.
+        // A reload during a duel returns to it, like an invite to one's own room.
+        const invite = roomFromLocation() ?? activeRoom.get();
+        if (invite && PVP_URL) {
+          track('duel_opened', { source: roomFromLocation() ? 'invite' : 'resume' });
+          return setScreen({ name: 'duel', invite });
+        }
         if (saved.kind === 'corrupt') return setScreen({ name: 'save_error', code: 'corrupt_save' });
         if (saved.kind === 'ok') {
           const check = engine.load(saved.saved.state);
@@ -190,6 +203,14 @@ export function App() {
           onSkipTutorial={skipTutorial}
           onRules={() => setRulesOpen(true)}
           onStats={openStats}
+          onDuel={
+            PVP_URL
+              ? () => {
+                  track('duel_opened', { source: 'home' });
+                  setScreen({ name: 'duel', invite: null });
+                }
+              : undefined
+          }
           opponent={opponent}
           onPickOpponent={() => setPickerOpen(true)}
         />
@@ -231,6 +252,21 @@ export function App() {
           }}
         />
       ) : null;
+      break;
+    case 'duel':
+      content = (
+        <Duel
+          key={screen.invite ?? 'host'}
+          duel={duel}
+          inviteRoomId={screen.invite}
+          onRules={() => setRulesOpen(true)}
+          onExit={() => {
+            clearRoomFromLocation();
+            duel.reset();
+            setScreen({ name: 'home' });
+          }}
+        />
+      );
       break;
     case 'stats':
       content = archive ? (

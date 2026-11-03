@@ -24,6 +24,9 @@
   --card-black: #101827;
   --border: #2c4262;
   --gold: #f5b83d;
+  /* Showdown marks identify the player, not the winner. */
+  --mark-mine: #38bdf8;
+  --mark-theirs: #f59e0b;
 
   --radius-control: 14px;
   --radius-modal: 22px;
@@ -293,28 +296,37 @@ p {
 }
 
 .card--best-mine {
-  transform: translateY(-6px);
+  transform: translateY(-4px);
   box-shadow:
-    0 0 0 3px var(--accent-win),
+    0 0 0 3px var(--mark-mine),
     0 6px 14px rgb(0 0 0 / 0.4);
 }
 
 .card--best-theirs:not(.card--best-mine) {
   box-shadow:
-    0 0 0 3px var(--gold),
+    0 0 0 3px var(--mark-theirs),
     0 2px 6px rgb(0 0 0 / 0.35);
 }
 
-.card__marker {
+/* Two separate marks, so a board card in both best fives shows both:
+   cyan above the card (mine), amber below it (the opponent's). */
+.card__mark {
   position: absolute;
-  left: 50%;
+  left: 18%;
+  right: 18%;
+  height: 4px;
+  border-radius: 2px;
+  box-shadow: 0 0 0 1.5px var(--bg-felt-edge);
+}
+
+.card__mark--mine {
+  top: -9px;
+  background: var(--mark-mine);
+}
+
+.card__mark--theirs {
   bottom: -9px;
-  width: 8px;
-  height: 8px;
-  margin-left: -4px;
-  border-radius: 50%;
-  background: var(--gold);
-  box-shadow: 0 0 0 2px var(--bg-felt-edge);
+  background: var(--mark-theirs);
 }
 
 .card--dim {
@@ -347,6 +359,11 @@ p {
   flex: none;
 }
 
+.hud__hand,
+.hud__blinds {
+  white-space: nowrap;
+}
+
 .hud__hand {
   font-weight: 700;
   font-size: 16px;
@@ -366,6 +383,33 @@ p {
   color: var(--text-secondary);
   font-size: 14px;
   font-weight: 600;
+}
+
+.hud__clock {
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: var(--bg-surface-2);
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.hud__clock.is-low {
+  background: #6b2222;
+  color: #ffd9d9;
+}
+
+.avatar-photo {
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.duel-next {
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  font-weight: 600;
+  text-align: center;
 }
 
 .hud__menu {
@@ -451,6 +495,13 @@ p {
   box-shadow: inset 0 0 0 1.5px var(--border);
   min-width: 120px;
   justify-content: center;
+}
+
+.seat__name-text {
+  min-width: 0;
+  max-width: 8em;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .seat__name {
@@ -628,6 +679,12 @@ p {
   visibility: hidden;
 }
 
+/* With the hand result on the felt, empty chips and pot give up their room. */
+.felt--result .bet.is-empty,
+.felt--result .pot.is-empty {
+  display: none;
+}
+
 .banner {
   display: flex;
   flex-direction: column;
@@ -669,6 +726,7 @@ p {
 }
 
 .legend {
+  flex: none;
   display: inline-block;
   width: 10px;
   height: 10px;
@@ -678,12 +736,38 @@ p {
 }
 
 .legend--mine {
-  background: var(--accent-win);
+  background: var(--mark-mine);
 }
 
 .legend--theirs {
-  background: var(--gold);
-  border-radius: 50%;
+  background: var(--mark-theirs);
+}
+
+.banner__who {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  text-align: left;
+  min-height: 32px;
+  padding: 2px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-on-felt);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.banner__who[aria-pressed='true'] {
+  background: rgb(255 255 255 / 0.12);
+  color: #fff;
+  font-weight: 700;
+}
+
+.banner__reason {
+  flex-basis: 100%;
+  color: #fff;
+  font-weight: 700;
 }
 
 /* Fixed-height action dock: buttons never make the layout jump. */
@@ -1587,6 +1671,141 @@ p {
   font-weight: 700;
 }
 
+/* ---------- Duels ---------- */
+
+.duel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 0 var(--gutter) calc(20px + env(safe-area-inset-bottom));
+}
+
+.duel--invite {
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.duel__title {
+  font-size: 22px;
+  line-height: 1.25;
+}
+
+.duel__text {
+  color: var(--text-secondary);
+  line-height: 1.4;
+  text-align: center;
+}
+
+.duel__actions,
+.duel__invite,
+.duel__ready {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+}
+
+.duel__hint {
+  color: var(--text-secondary);
+  font-size: 13px;
+  text-align: center;
+}
+
+.duel__flash {
+  align-self: center;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: var(--bg-surface-2);
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.duel__error {
+  color: var(--accent-loss);
+  text-align: center;
+}
+
+.duel-avatar {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--bg-surface-2);
+  box-shadow: 0 0 0 2px var(--border);
+  font-size: 22px;
+  font-weight: 800;
+}
+
+.duel-avatar--empty {
+  color: var(--text-secondary);
+}
+
+.duel-seats {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.duel-seats__vs {
+  color: var(--text-secondary);
+  font-weight: 800;
+}
+
+.duel-seat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 14px 8px;
+  border-radius: 16px;
+  background: var(--bg-surface);
+  box-shadow: inset 0 0 0 1.5px var(--border);
+  text-align: center;
+}
+
+.duel-seat.is-ready {
+  box-shadow: inset 0 0 0 2.5px var(--accent-win);
+}
+
+.duel-seat--empty {
+  box-shadow: inset 0 0 0 1.5px var(--border);
+  border: 1.5px dashed var(--border);
+  background: transparent;
+}
+
+.duel-seat__name {
+  max-width: 100%;
+  overflow: hidden;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.duel-seat__state {
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.duel-seat.is-ready .duel-seat__state {
+  color: var(--accent-win);
+  font-weight: 700;
+}
+
+.notice--floating {
+  position: fixed;
+  top: calc(8px + env(safe-area-inset-top));
+  left: 50%;
+  z-index: 15;
+  transform: translateX(-50%);
+}
+
 /* ---------- Hand replay ---------- */
 
 .replay {
@@ -1820,6 +2039,16 @@ p {
   }
   .stats-card__grid dd {
     font-size: 20px;
+  }
+  .hud {
+    gap: 6px;
+  }
+  .hud__blinds-word {
+    display: none;
+  }
+  .hud__blinds,
+  .hud__clock {
+    padding: 5px 8px;
   }
   .replay__btn {
     min-width: 44px;

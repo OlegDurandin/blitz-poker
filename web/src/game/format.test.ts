@@ -18,7 +18,9 @@ describe('hand descriptions', () => {
     expect(describeHand(hand('straight', '5s 4h 3c 2d As'))).toBe('стрит до пятёрки');
     expect(describeHand(hand('flush', 'Ah Th 8h 4h 2h'))).toBe('флеш до туза');
     expect(describeHand(hand('high_card', 'Kc Jd 9s 5h 3c'))).toBe('старшая карта: король');
-    expect(describeHand(hand('four_of_a_kind', 'Qs Qh Qd Qc 2s'))).toBe('каре: дамы');
+    expect(describeHand(hand('four_of_a_kind', 'Qs Qh Qd Qc 2s'))).toBe('каре дам');
+    expect(describeHand(hand('three_of_a_kind', '3c 3d 3h Ks Qd'))).toBe('три тройки');
+    expect(describeHand(hand('three_of_a_kind', 'Jc Jd Jh Ks Qd'))).toBe('три валета');
     expect(describeHand(hand('royal_flush', 'As Ks Qs Js Ts'))).toBe('роял-флеш');
   });
 

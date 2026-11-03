@@ -20,7 +20,13 @@ export type AnalyticsEvent =
   | 'hand_replay_stepped'
   | 'bot_action_selected'
   | 'persistence_error'
-  | 'opponent_selected';
+  | 'opponent_selected'
+  | 'duel_opened'
+  | 'duel_room_created'
+  | 'duel_invite_shared'
+  | 'duel_invite_copied'
+  | 'duel_joined'
+  | 'duel_rematch_requested';
 
 type Params = Record<string, string | number | boolean | null>;
 type Transport = (event: AnalyticsEvent, params: Params) => void;

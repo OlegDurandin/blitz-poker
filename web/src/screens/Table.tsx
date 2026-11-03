@@ -3,8 +3,9 @@ import { BotAvatar } from '../components/icons';
 import { PlayingCard } from '../components/PlayingCard';
 import { RaiseSheet } from '../components/RaiseSheet';
 import { ActionTag, BetChip, DealerButton, Stack } from '../components/TableParts';
-import type { ActionRecord, Card, PlayerAction, PlayerView, Seat } from '../engine/types';
-import { STREET_NAME, describeHand, kickerNote } from '../game/format';
+import type { ActionRecord, PlayerAction, PlayerView, Seat } from '../engine/types';
+import { STREET_NAME, describeHand } from '../game/format';
+import { showdownMarks, showdownReason, type Focus } from '../game/showdown';
 import { botName, opponentInfo } from '../game/opponents';
 import { prefersReducedMotion } from '../game/motion';
 import type { TutorialStep } from '../game/storage';
@@ -21,6 +22,28 @@ interface Props {
   onMenu: () => void;
   onTutorialStep: (step: TutorialStep) => void;
   onSkipTutorial: () => void;
+  /** Set for a duel with a person: the server runs clocks and hands. */
+  duel?: DuelTable;
+}
+
+export interface DuelTable {
+  name: string;
+  photo: string | null;
+  connected: boolean;
+  /** While the opponent may still reconnect. */
+  reconnectInMs: number | null;
+  /** Time left for whoever acts (turn plus bank), and whose turn it is. */
+  clock: { mine: boolean; leftMs: number } | null;
+  /** During the result pause, until the next hand is dealt. */
+  nextHandInMs: number | null;
+  /** An action is on its way to the server. */
+  pending: boolean;
+}
+
+/** "0:07" */
+export function formatClock(ms: number): string {
+  const s = Math.max(0, Math.ceil(ms / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
 const IDX: Record<Seat, 0 | 1> = { human: 0, bot: 1 };
@@ -68,7 +91,8 @@ function lastAction(view: PlayerView, seat: Seat): ActionRecord | null {
 export function Table(props: Props) {
   const { view, tutorialStep, paused } = props;
   const tutorial = view.kind === 'tutorial';
-  const bot = botName(view.opponent);
+  const duel = props.duel;
+  const bot = duel?.name ?? botName(view.opponent);
   const reveal = useRunoutReveal(view);
   const [raiseOpen, setRaiseOpen] = useState(false);
 
@@ -93,16 +117,11 @@ export function Table(props: Props) {
     props.onAct(action);
   };
 
-  const mineBest = new Set<Card>(showdown?.[0].best ?? []);
-  const theirsBest = new Set<Card>(showdown?.[1].best ?? []);
-  const cardProps = (card: Card) =>
-    showdown
-      ? {
-          bestMine: mineBest.has(card),
-          bestTheirs: theirsBest.has(card),
-          dim: !mineBest.has(card) && !theirsBest.has(card),
-        }
-      : {};
+  // Which best five is marked; every new hand starts with both.
+  const [focus, setFocus] = useState<{ key: string; focus: Focus }>({ key: '', focus: 'both' });
+  const handKey = `${view.match_id}:${view.hand_number}`;
+  const currentFocus = focus.key === handKey ? focus.focus : 'both';
+  const cardProps = showdownMarks(showdown, currentFocus);
 
   const potShown = reveal.revealing && outcome ? outcome.pot : view.pot;
   const board = view.board.slice(0, reveal.visible);
@@ -117,9 +136,18 @@ export function Table(props: Props) {
           {tutorial ? 'Обучение' : `Раздача ${view.hand_number}/${view.hands_total}`}
         </span>
         <span className="hud__blinds" aria-label={`Блайнды ${view.sb} и ${view.bb}`}>
-          Блайнды {view.sb}/{view.bb}
+          <span className="hud__blinds-word">Блайнды </span>
+          {view.sb}/{view.bb}
         </span>
-        <button className="hud__menu" onClick={props.onMenu} aria-label="Меню и пауза">
+        {duel?.clock && (
+          <span
+            className={`hud__clock${duel.clock.leftMs <= 5000 ? ' is-low' : ''}`}
+            aria-label={`${duel.clock.mine ? 'Ваше время' : `Время: ${bot}`} ${formatClock(duel.clock.leftMs)}`}
+          >
+            ⏱ {formatClock(duel.clock.leftMs)}
+          </span>
+        )}
+        <button className="hud__menu" onClick={props.onMenu} aria-label={duel ? 'Меню' : 'Меню и пауза'}>
           <span aria-hidden="true">⋯</span>
         </button>
       </header>
@@ -145,19 +173,23 @@ export function Table(props: Props) {
           )}
         </div>
         <div className="seat__plate">
-          <BotAvatar color={opponentInfo(view.opponent).color} />
+          {duel?.photo ? (
+            <img className="bot-avatar avatar-photo" src={duel.photo} alt="" />
+          ) : (
+            <BotAvatar color={duel ? '#8fb0ff' : opponentInfo(view.opponent).color} />
+          )}
           <div>
             <div className="seat__name">
-              {bot}
+              <span className="seat__name-text">{bot}</span>
               {view.button === 'bot' && <DealerButton />}
             </div>
             <Stack amount={stacks[1]} gain={settled ? outcome!.net[1] : 0} />
           </div>
         </div>
-        <ActionTag action={lastAction(view, 'bot')} thinking={view.phase === 'in_hand' && view.to_act === 'bot'} />
+        <ActionTag action={lastAction(view, 'bot')} thinking={!duel && view.phase === 'in_hand' && view.to_act === 'bot'} />
       </section>
 
-      <section className="felt" aria-label="Стол">
+      <section className={`felt${settled && outcome ? ' felt--result' : ''}`} aria-label="Стол">
         <BetChip amount={view.bets[IDX.bot]} who={bot} />
         <div className={`pot${potShown > 0 ? '' : ' is-empty'}`} aria-live="polite">
           Банк {potShown}
@@ -172,7 +204,12 @@ export function Table(props: Props) {
           )}
         </div>
         {settled && outcome ? (
-          <ResultBanner view={view} />
+          <ResultBanner
+            view={view}
+            bot={bot}
+            focus={currentFocus}
+            onFocus={(f) => setFocus({ key: handKey, focus: f })}
+          />
         ) : (
           <div className="felt__street">{STREET_NAME[reveal.revealing ? streetFor(reveal.visible) : view.street]}</div>
         )}
@@ -207,24 +244,25 @@ export function Table(props: Props) {
 
       <div className="dock">
         <div className="dock__context" aria-live="polite">
-          {dockContext(view, reveal.revealing, paused)}
+          {dockContext(view, bot, reveal.revealing, paused, duel)}
         </div>
         <div className="dock__body">
           {myTurn && view.legal ? (
-            <div className="actions">
+            <div className="actions" aria-busy={duel?.pending || undefined}>
               {view.legal.fold && (
-                <button className="btn btn--secondary btn--action" onClick={() => act({ type: 'fold' })} aria-label="Сбросить карты">
+                <button className="btn btn--secondary btn--action" disabled={duel?.pending} onClick={() => act({ type: 'fold' })} aria-label="Сбросить карты">
                   Сбросить
                 </button>
               )}
               {view.legal.check && (
-                <button className="btn btn--secondary btn--action" onClick={() => act({ type: 'check' })} aria-label="Чек: пропустить ход без ставки">
+                <button className="btn btn--secondary btn--action" disabled={duel?.pending} onClick={() => act({ type: 'check' })} aria-label="Чек: пропустить ход без ставки">
                   Чек
                 </button>
               )}
               {view.legal.call !== null && (
                 <button
                   className="btn btn--secondary btn--action"
+                  disabled={duel?.pending}
                   onClick={() => act({ type: 'call' })}
                   aria-label={view.legal.call_is_all_in ? `Уравнять олл-ин ${view.legal.call}` : `Уравнять ${view.legal.call}`}
                 >
@@ -234,6 +272,7 @@ export function Table(props: Props) {
               {view.legal.raise && (
                 <button
                   className="btn btn--primary btn--action"
+                  disabled={duel?.pending}
                   onClick={() => setRaiseOpen(true)}
                   aria-label={view.legal.raise.kind === 'bet' ? 'Сделать ставку' : 'Повысить ставку'}
                   aria-haspopup="dialog"
@@ -246,6 +285,11 @@ export function Table(props: Props) {
             <button className="btn btn--secondary btn--block" onClick={reveal.skip}>
               Пропустить анимацию
             </button>
+          ) : settled && duel ? (
+            // Duels move on by themselves after a short pause.
+            <div className="actions actions--waiting duel-next" role="status">
+              {view.is_final_hand ? 'Подводим итоги…' : 'Следующая раздача скоро начнётся'}
+            </div>
           ) : settled ? (
             <button className="btn btn--primary btn--block" onClick={props.onNext}>
               {tutorial ? 'Начать матч' : view.is_final_hand ? 'Итоги матча' : 'Следующая раздача'}
@@ -277,19 +321,28 @@ function streetFor(boardLen: number) {
   return boardLen >= 5 ? 'river' : boardLen === 4 ? 'turn' : boardLen === 3 ? 'flop' : 'preflop';
 }
 
-function dockContext(view: PlayerView, revealing: boolean, paused: boolean): string {
-  const bot = botName(view.opponent);
+function dockContext(view: PlayerView, bot: string, revealing: boolean, paused: boolean, duel?: DuelTable): string {
   if (revealing) return 'Олл-ин: открываем карты';
+  if (duel && !duel.connected && duel.reconnectInMs !== null) {
+    return `${bot} переподключается… ${formatClock(duel.reconnectInMs)}`;
+  }
   if (view.phase === 'hand_over') {
     if (view.kind === 'tutorial') return 'Обучение завершено';
     if (view.is_final_hand) return 'Матч завершён';
+    if (duel?.nextHandInMs != null) {
+      return `Раздача ${view.hand_number + 1}/${view.hands_total} через ${Math.max(1, Math.ceil(duel.nextHandInMs / 1000))} с`;
+    }
     const [sb, bb] = view.next_blinds ?? [view.sb, view.bb];
     return `Раздача ${view.hand_number + 1}/${view.hands_total} · блайнды ${sb}/${bb}`;
   }
   if (view.to_act === 'human') {
+    if (duel?.pending) return 'Отправляем ход…';
     return view.to_call > 0 ? `Ваш ход · к ответу: ${Math.min(view.to_call, view.stacks[0])}` : 'Ваш ход';
   }
-  if (view.to_act === 'bot') return paused ? 'Пауза' : `${bot} думает…`;
+  if (view.to_act === 'bot') {
+    if (duel) return `Ход: ${bot}`;
+    return paused ? 'Пауза' : `${bot} думает…`;
+  }
   return '';
 }
 
@@ -325,9 +378,18 @@ function TutorialHint({ step, onOk, onSkip }: { step: TutorialStep; onOk: () => 
   );
 }
 
-function ResultBanner({ view }: { view: PlayerView }) {
+function ResultBanner({
+  view,
+  bot,
+  focus,
+  onFocus,
+}: {
+  view: PlayerView;
+  bot: string;
+  focus: Focus;
+  onFocus: (f: Focus) => void;
+}) {
   const o = view.outcome!;
-  const bot = botName(view.opponent);
   const headline =
     o.winner === 'human'
       ? `Вы выиграли банк ${o.pot}`
@@ -335,7 +397,6 @@ function ResultBanner({ view }: { view: PlayerView }) {
         ? `${bot} выиграл банк ${o.pot}`
         : `Ничья · банк ${o.pot} разделён`;
   const tone = o.winner === 'human' ? 'win' : o.winner === 'bot' ? 'loss' : 'draw';
-  const kicker = o.showdown && o.winner ? kickerNote(o.showdown[0], o.showdown[1]) : null;
   const icon = tone === 'win' ? '▲' : tone === 'loss' ? '▼' : '=';
   return (
     <div className={`banner banner--${tone}`} role="status">
@@ -344,19 +405,30 @@ function ResultBanner({ view }: { view: PlayerView }) {
       </div>
       {o.showdown ? (
         <div className="banner__detail">
-          <span>
+          {/* Tapping a player shows only their five; tapping again shows both. */}
+          <button
+            className="banner__who"
+            aria-pressed={focus === 'mine'}
+            onClick={() => onFocus(focus === 'mine' ? 'both' : 'mine')}
+          >
             <i className="legend legend--mine" aria-hidden="true" />
             Вы — {describeHand(o.showdown[0])}
-          </span>
-          <span>
+          </button>
+          <button
+            className="banner__who"
+            aria-pressed={focus === 'theirs'}
+            onClick={() => onFocus(focus === 'theirs' ? 'both' : 'theirs')}
+          >
             <i className="legend legend--theirs" aria-hidden="true" />
             {bot} — {describeHand(o.showdown[1])}
-          </span>
-          {kicker && <span className="banner__kicker">{kicker}</span>}
+          </button>
+          <span className="banner__reason">{showdownReason(o.showdown, o.winner)}</span>
         </div>
       ) : (
         <div className="banner__detail">
-          <span>{o.winner === 'human' ? `${bot} сбросил карты` : 'Вы сбросили карты'}</span>
+          <span>
+            {o.winner === 'human' ? `Победа после сброса карт: ${bot} сбросил` : 'Вы сбросили карты'}
+          </span>
         </div>
       )}
     </div>
