@@ -32,7 +32,7 @@ web/            клиент VK Mini App: React + TypeScript + Vite + vk-bridge
 
 ## Запуск
 
-Нужны Rust (stable) с таргетом `wasm32-unknown-unknown` и Node 20+.
+Нужны Rust (stable) с таргетом `wasm32-unknown-unknown` и Node 22.12+ (в `.nvmrc` указана 24, `nvm use` её подхватит).
 
 ```bash
 rustup target add wasm32-unknown-unknown
@@ -54,10 +54,14 @@ npm run build      # production-сборка в web/dist
 Mini App регистрируется как **приложение**, а не через токен сообщества:
 
 1. Создайте приложение типа «Mini App» на [vk.com/editapp?act=create](https://vk.com/editapp?act=create).
-2. Для разработки укажите в настройках URL локального сервера (через туннель с HTTPS) или URL хостинга.
-3. Для production соберите `web/dist` и выложите на HTTPS-хостинг. Можно использовать хостинг VK
-   через `@vkontakte/vk-miniapps-deploy`: ему нужен `app_id` и `vk-hosting-config.json`.
-4. Привяжите Mini App к сообществу, чтобы он запускался из группы.
+2. Запишите его числовой ID в `.env` в корне репозитория: `VK_APP_ID=12345678`.
+3. Разработка внутри VK: `cd web && npm run tunnel`. Команда поднимает dev-сервер и HTTPS-туннель
+   (`vk-tunnel`) и сама прописывает адрес туннеля как dev-URL приложения. При первом запуске
+   нужно подтвердить вход в VK по ссылке из терминала.
+4. Выкладка на хостинг VK: `cd web && npm run deploy`. Команда собирает `web/dist` и загружает его
+   через `@vkontakte/vk-miniapps-deploy` (настройки в `web/vk-hosting-config.json`). Деплой спросит,
+   обновлять ли prod- и dev-URL. Для CI можно передать `MINI_APPS_ACCESS_TOKEN`.
+5. Привяжите Mini App к сообществу, чтобы он запускался из группы.
 
 Токен сообщества понадобится, только если нужен ещё и чат-бот в сообщениях группы. Например, он
 может отвечать кнопкой «Играть», которая открывает Mini App. Для самой игры токен не нужен.

@@ -1,6 +1,7 @@
 /target
 node_modules/
 /web/dist/
+/web/build.zip
 # Built from crates/poker-wasm by `npm run wasm`
 /web/src/engine/generated/
 .DS_Store

@@ -1,0 +1,8 @@
+{
+  "http-protocol": "http",
+  "ws-protocol": "ws",
+  "host": "localhost",
+  "port": 5173,
+  "insecure": 0,
+  "endpoints": ["mobile", "mvk", "web"]
+}
