@@ -297,6 +297,17 @@ fn view_never_leaks_opponent_cards_mid_hand() {
 /// Plays thousands of random matches with random legal actions and checks the
 /// invariants on every transition, including resuming from a JSON snapshot.
 #[test]
+fn saves_before_opponents_load_as_alex() {
+    let m = Match::against(3, Opponent::Station);
+    let mut json: serde_json::Value = serde_json::to_value(&m).unwrap();
+    assert_eq!(json["opponent"], "station");
+    json.as_object_mut().unwrap().remove("opponent");
+    let old: Match = serde_json::from_value(json).unwrap();
+    assert_eq!(old.opponent, Opponent::Alex);
+    old.validate().unwrap();
+}
+
+#[test]
 fn random_play_fuzz() {
     for seed in 0..3000u64 {
         let mut m = Match::new(seed);

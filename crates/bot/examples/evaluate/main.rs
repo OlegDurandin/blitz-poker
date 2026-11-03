@@ -11,13 +11,31 @@ use bot::Personality;
 use bot::reference::{calling_station, random_legal, tight_aggressive};
 use poker_core::card::full_deck;
 use poker_core::rng::Rng;
-use poker_core::{Card, Match, Phase, PlayerAction, PlayerView, Seat, Street, hand_value};
+use poker_core::{
+    Card, Match, Opponent, Phase, PlayerAction, PlayerView, Seat, Street, hand_value,
+};
 use std::time::{Duration, Instant};
 
 type Policy = fn(&PlayerView, u64) -> PlayerAction;
 
 fn current(v: &PlayerView, seed: u64) -> PlayerAction {
-    bot::decide(v, Personality::Standard, seed)
+    bot::decide(v, Personality::Standard(Opponent::Alex), seed)
+}
+
+fn novice(v: &PlayerView, seed: u64) -> PlayerAction {
+    bot::decide(v, Personality::Standard(Opponent::Novice), seed)
+}
+
+fn tight(v: &PlayerView, seed: u64) -> PlayerAction {
+    bot::decide(v, Personality::Standard(Opponent::Tight), seed)
+}
+
+fn station(v: &PlayerView, seed: u64) -> PlayerAction {
+    bot::decide(v, Personality::Standard(Opponent::Station), seed)
+}
+
+fn aggressor(v: &PlayerView, seed: u64) -> PlayerAction {
+    bot::decide(v, Personality::Standard(Opponent::Aggressor), seed)
 }
 
 fn baseline(v: &PlayerView, seed: u64) -> PlayerAction {
@@ -92,6 +110,9 @@ struct Report {
     bluffs: u32,
     /// Folds when holding > 80% raw equity.
     strong_folds: u32,
+    /// Postflop decisions facing a bet, and folds among them.
+    facing_bet: u32,
+    folds_to_bet: u32,
     decisions: u32,
     illegal: u32,
     think: Duration,
@@ -112,6 +133,12 @@ fn observe(r: &mut Report, v: &PlayerView, a: PlayerAction, rng: &mut Rng) {
     let mix = &mut r.mix[street_idx(v.street)];
     let pot = v.pot + v.bets[0] + v.bets[1];
     let strength = raw_strength(v.hole, &v.board, rng);
+    if v.street != Street::Preflop && v.to_call > 0 {
+        r.facing_bet += 1;
+        if a == PlayerAction::Fold {
+            r.folds_to_bet += 1;
+        }
+    }
     match a {
         PlayerAction::Fold => {
             mix.fold += 1;
@@ -259,7 +286,78 @@ fn print_mix(r: &Report) {
     }
 }
 
+/// One line per opponent style: results and the numbers that make the styles differ.
+fn personas(deals: u64) {
+    let styles: [(&str, Policy); 5] = [
+        ("novice", novice),
+        ("station", station),
+        ("tight", tight),
+        ("alex", current),
+        ("aggressor", aggressor),
+    ];
+    let opponents: [(&str, Policy); 4] = [
+        ("random", random_legal),
+        ("station", calling_station),
+        ("tight-aggr", tight_aggressive),
+        ("alex", current),
+    ];
+    println!("{deals} deals x 2 seats; chips = average result per match\n");
+    println!(
+        "{:<10} {:>8} {:>8} {:>11} {:>8}   {:>9} {:>8} {:>12} {:>6}",
+        "style",
+        "random",
+        "station",
+        "tight-aggr",
+        "alex",
+        "pre-fold",
+        "post AF",
+        "fold-to-bet",
+        "ms"
+    );
+    for (name, tested) in styles {
+        let mut chips = vec![];
+        let mut all = Report::default();
+        for (_, opp) in opponents {
+            let r = duel(tested, opp, deals);
+            chips.push(r.chips as f64 / r.matches as f64);
+            for (a, b) in all.mix.iter_mut().zip(&r.mix) {
+                a.fold += b.fold;
+                a.check += b.check;
+                a.call += b.call;
+                a.bet_raise += b.bet_raise;
+                a.all_in += b.all_in;
+                a.call_all_in += b.call_all_in;
+            }
+            all.facing_bet += r.facing_bet;
+            all.folds_to_bet += r.folds_to_bet;
+            all.decisions += r.decisions;
+            all.think += r.think;
+        }
+        let post = &all.mix[1..];
+        let aggressive: u32 = post.iter().map(|m| m.bet_raise + m.all_in).sum();
+        let calls: u32 = post.iter().map(|m| m.call + m.call_all_in).sum();
+        println!(
+            "{name:<10} {:>+8.0} {:>+8.0} {:>+11.0} {:>+8.0}   {:>9} {:>8.2} {:>12} {:>6.1}",
+            chips[0],
+            chips[1],
+            chips[2],
+            chips[3],
+            pct(all.mix[0].fold, all.mix[0].total()),
+            aggressive as f64 / calls.max(1) as f64,
+            pct(all.folds_to_bet, all.facing_bet),
+            all.think.as_secs_f64() * 1000.0 / all.decisions.max(1) as f64,
+        );
+    }
+}
+
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("personas") {
+        let deals = std::env::args()
+            .nth(2)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(200);
+        return personas(deals);
+    }
     let deals: u64 = std::env::args()
         .nth(1)
         .and_then(|s| s.parse().ok())

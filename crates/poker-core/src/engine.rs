@@ -90,6 +90,35 @@ pub enum MatchKind {
     Tutorial,
 }
 
+/// Which bot the human plays against. How each one plays lives in the `bot`
+/// crate; the engine only records the choice so a save resumes against the
+/// same opponent.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Opponent {
+    /// Balanced; the default and the only opponent before 1.2.
+    #[default]
+    Alex,
+    /// Beginner: loose, passive, misreads hands.
+    Novice,
+    /// Plays few hands and rarely bluffs.
+    Tight,
+    /// Calls a lot, rarely raises.
+    Station,
+    /// Loose-aggressive: bets, raises and bluffs often.
+    Aggressor,
+}
+
+impl Opponent {
+    pub const ALL: [Opponent; 5] = [
+        Opponent::Novice,
+        Opponent::Station,
+        Opponent::Tight,
+        Opponent::Alex,
+        Opponent::Aggressor,
+    ];
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
@@ -335,6 +364,9 @@ pub struct Match {
     pub schema: u32,
     pub id: String,
     pub kind: MatchKind,
+    /// Absent in saves before 1.2, which were all against Alex.
+    #[serde(default)]
+    pub opponent: Opponent,
     rng: Rng,
     pub stacks: [u32; 2],
     pub phase: Phase,
@@ -345,8 +377,13 @@ pub struct Match {
 }
 
 impl Match {
-    /// A fresh 8-hand match. The button for hand 1 is drawn at random.
+    /// A fresh 8-hand match against Alex.
     pub fn new(seed: u64) -> Match {
+        Match::against(seed, Opponent::Alex)
+    }
+
+    /// A fresh 8-hand match. The button for hand 1 is drawn at random.
+    pub fn against(seed: u64, opponent: Opponent) -> Match {
         let mut rng = Rng::new(seed);
         let button = if rng.chance(0.5) {
             Seat::Human
@@ -354,6 +391,7 @@ impl Match {
             Seat::Bot
         };
         let mut m = Match::empty(format!("{:016x}", mix(seed)), MatchKind::Standard, rng);
+        m.opponent = opponent;
         m.start_hand(1, button, None);
         m
     }
@@ -371,6 +409,7 @@ impl Match {
             schema: SCHEMA_VERSION,
             id,
             kind,
+            opponent: Opponent::Alex,
             rng,
             stacks: [STARTING_STACK; 2],
             phase: Phase::InHand,
@@ -828,6 +867,7 @@ impl Match {
             schema: self.schema,
             match_id: self.id.clone(),
             kind: self.kind,
+            opponent: self.opponent,
             phase: self.phase,
             me: seat,
             hand_number: h.number,
@@ -860,6 +900,7 @@ pub struct PlayerView {
     pub schema: u32,
     pub match_id: String,
     pub kind: MatchKind,
+    pub opponent: Opponent,
     pub phase: Phase,
     pub me: Seat,
     pub hand_number: u8,

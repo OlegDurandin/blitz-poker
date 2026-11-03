@@ -4,7 +4,8 @@ import { PlayingCard } from '../components/PlayingCard';
 import { RaiseSheet } from '../components/RaiseSheet';
 import { ActionTag, BetChip, DealerButton, Stack } from '../components/TableParts';
 import type { ActionRecord, Card, PlayerAction, PlayerView, Seat } from '../engine/types';
-import { BOT_NAME, STREET_NAME, categoryLower } from '../game/format';
+import { STREET_NAME, describeHand, kickerNote } from '../game/format';
+import { botName, opponentInfo } from '../game/opponents';
 import { prefersReducedMotion } from '../game/motion';
 import type { TutorialStep } from '../game/storage';
 import { haptic } from '../vk';
@@ -67,6 +68,7 @@ function lastAction(view: PlayerView, seat: Seat): ActionRecord | null {
 export function Table(props: Props) {
   const { view, tutorialStep, paused } = props;
   const tutorial = view.kind === 'tutorial';
+  const bot = botName(view.opponent);
   const reveal = useRunoutReveal(view);
   const [raiseOpen, setRaiseOpen] = useState(false);
 
@@ -131,7 +133,7 @@ export function Table(props: Props) {
         </div>
       )}
 
-      <section className="seat seat--bot" aria-label={BOT_NAME}>
+      <section className="seat seat--bot" aria-label={bot}>
         <div className="seat__cards">
           {opponentCards ? (
             opponentCards.map((c) => <PlayingCard key={c} card={c} size="sm" {...cardProps(c)} />)
@@ -143,10 +145,10 @@ export function Table(props: Props) {
           )}
         </div>
         <div className="seat__plate">
-          <BotAvatar />
+          <BotAvatar color={opponentInfo(view.opponent).color} />
           <div>
             <div className="seat__name">
-              {BOT_NAME}
+              {bot}
               {view.button === 'bot' && <DealerButton />}
             </div>
             <Stack amount={stacks[1]} gain={settled ? outcome!.net[1] : 0} />
@@ -156,7 +158,7 @@ export function Table(props: Props) {
       </section>
 
       <section className="felt" aria-label="Стол">
-        <BetChip amount={view.bets[IDX.bot]} who={BOT_NAME} />
+        <BetChip amount={view.bets[IDX.bot]} who={bot} />
         <div className={`pot${potShown > 0 ? '' : ' is-empty'}`} aria-live="polite">
           Банк {potShown}
         </div>
@@ -276,6 +278,7 @@ function streetFor(boardLen: number) {
 }
 
 function dockContext(view: PlayerView, revealing: boolean, paused: boolean): string {
+  const bot = botName(view.opponent);
   if (revealing) return 'Олл-ин: открываем карты';
   if (view.phase === 'hand_over') {
     if (view.kind === 'tutorial') return 'Обучение завершено';
@@ -286,7 +289,7 @@ function dockContext(view: PlayerView, revealing: boolean, paused: boolean): str
   if (view.to_act === 'human') {
     return view.to_call > 0 ? `Ваш ход · к ответу: ${Math.min(view.to_call, view.stacks[0])}` : 'Ваш ход';
   }
-  if (view.to_act === 'bot') return paused ? 'Пауза' : `${BOT_NAME} думает…`;
+  if (view.to_act === 'bot') return paused ? 'Пауза' : `${bot} думает…`;
   return '';
 }
 
@@ -324,13 +327,15 @@ function TutorialHint({ step, onOk, onSkip }: { step: TutorialStep; onOk: () => 
 
 function ResultBanner({ view }: { view: PlayerView }) {
   const o = view.outcome!;
+  const bot = botName(view.opponent);
   const headline =
     o.winner === 'human'
       ? `Вы выиграли банк ${o.pot}`
       : o.winner === 'bot'
-        ? `${BOT_NAME} выиграл банк ${o.pot}`
+        ? `${bot} выиграл банк ${o.pot}`
         : `Ничья · банк ${o.pot} разделён`;
   const tone = o.winner === 'human' ? 'win' : o.winner === 'bot' ? 'loss' : 'draw';
+  const kicker = o.showdown && o.winner ? kickerNote(o.showdown[0], o.showdown[1]) : null;
   const icon = tone === 'win' ? '▲' : tone === 'loss' ? '▼' : '=';
   return (
     <div className={`banner banner--${tone}`} role="status">
@@ -341,16 +346,17 @@ function ResultBanner({ view }: { view: PlayerView }) {
         <div className="banner__detail">
           <span>
             <i className="legend legend--mine" aria-hidden="true" />
-            Вы — {categoryLower(o.showdown[0].category)}
+            Вы — {describeHand(o.showdown[0])}
           </span>
           <span>
             <i className="legend legend--theirs" aria-hidden="true" />
-            {BOT_NAME} — {categoryLower(o.showdown[1].category)}
+            {bot} — {describeHand(o.showdown[1])}
           </span>
+          {kicker && <span className="banner__kicker">{kicker}</span>}
         </div>
       ) : (
         <div className="banner__detail">
-          <span>{o.winner === 'human' ? `${BOT_NAME} сбросил карты` : 'Вы сбросили карты'}</span>
+          <span>{o.winner === 'human' ? `${bot} сбросил карты` : 'Вы сбросили карты'}</span>
         </div>
       )}
     </div>

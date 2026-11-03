@@ -1,4 +1,7 @@
-import { HeroSpade, SpadeLogo } from '../components/icons';
+import { BotAvatar, HeroSpade, SpadeLogo } from '../components/icons';
+import { Difficulty } from '../components/OpponentPicker';
+import type { Opponent } from '../engine/types';
+import { opponentInfo } from '../game/opponents';
 import { completedMatches, type Stats } from '../game/storage';
 
 interface Props {
@@ -13,6 +16,8 @@ interface Props {
   onSkipTutorial: () => void;
   onRules: () => void;
   onStats: () => void;
+  opponent: Opponent;
+  onPickOpponent: () => void;
 }
 
 export function Home(p: Props) {
@@ -33,6 +38,7 @@ export function Home(p: Props) {
       </div>
 
       <div className="home__actions">
+        {!p.hasSavedMatch && !p.tutorialInProgress && <OpponentRow id={p.opponent} onClick={p.onPickOpponent} />}
         {p.hasSavedMatch ? (
           <>
             <button className="btn btn--primary btn--hero" onClick={p.onContinue}>
@@ -94,5 +100,21 @@ export function Home(p: Props) {
         Только для развлечения: фишки виртуальные, не покупаются и не выводятся.
       </p>
     </main>
+  );
+}
+
+function OpponentRow({ id, onClick }: { id: Opponent; onClick: () => void }) {
+  const o = opponentInfo(id);
+  return (
+    <button className="opponent-row" onClick={onClick} aria-label={`Соперник: ${o.name}, ${o.style}. Сменить соперника`}>
+      <BotAvatar color={o.color} />
+      <span className="opponent-row__body">
+        <span className="opponent-row__label">Соперник</span>
+        <span className="opponent-row__name">{o.name}</span>
+        <span className="opponent-row__meta">{o.style}</span>
+        <Difficulty level={o.difficulty} />
+      </span>
+      <span className="opponent-row__change">Сменить</span>
+    </button>
   );
 }

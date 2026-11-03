@@ -406,7 +406,9 @@ p {
 
 .seat {
   display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  /* The cards keep their width; only the tag column may shrink, so a long
+     action tag wraps instead of pushing the row past the screen edge. */
+  grid-template-columns: 1fr auto minmax(0, 1fr);
   align-items: center;
   gap: 8px;
   flex: none;
@@ -522,7 +524,10 @@ p {
   color: var(--text-primary);
   font-size: 14px;
   font-weight: 600;
-  white-space: nowrap;
+  line-height: 1.2;
+  text-align: center;
+  /* Wraps "Ставка 390" onto two lines rather than running off narrow screens. */
+  white-space: normal;
   animation: pop 0.2s ease-out;
 }
 
@@ -655,6 +660,12 @@ p {
   gap: 2px 12px;
   color: var(--text-on-felt);
   font-size: 14px;
+}
+
+.banner__kicker {
+  flex-basis: 100%;
+  color: var(--text-primary);
+  font-weight: 600;
 }
 
 .legend {
@@ -1411,6 +1422,169 @@ p {
   background: #4a2323;
   color: #ffd9d9;
   font-size: 14px;
+}
+
+.vs-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  list-style: none;
+}
+
+.vs-list__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.vs-list__name {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  font-weight: 700;
+}
+
+.vs-list__score {
+  font-size: 18px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ---------- Opponent choice ---------- */
+
+.opponent-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 64px;
+  padding: 10px 14px;
+  border: 0;
+  border-radius: 16px;
+  background: var(--bg-surface);
+  box-shadow: inset 0 0 0 1.5px var(--border);
+  text-align: left;
+  cursor: pointer;
+}
+
+.opponent-row__body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.opponent-row__label {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.opponent-row__name {
+  font-size: 17px;
+  font-weight: 800;
+}
+
+.opponent-row__meta {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.opponent-row__change {
+  color: #8fb0ff;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.difficulty {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.difficulty i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--border);
+}
+
+.difficulty i.is-on {
+  background: var(--gold);
+}
+
+.difficulty span {
+  margin-left: 3px;
+}
+
+.picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: min(70dvh, 560px);
+  overflow-y: auto;
+}
+
+.picker__item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+  padding: 12px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--bg-surface-2);
+  box-shadow: inset 0 0 0 1.5px var(--border);
+  text-align: left;
+  cursor: pointer;
+}
+
+.picker__item.is-selected {
+  box-shadow: inset 0 0 0 2.5px var(--action-primary);
+}
+
+.picker__body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.picker__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.picker__name {
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.picker__style {
+  color: #8fb0ff;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.picker__text {
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.picker__record {
+  margin-top: 2px;
+  font-size: 13px;
+  font-weight: 700;
 }
 
 /* ---------- Hand replay ---------- */

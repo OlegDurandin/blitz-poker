@@ -19,7 +19,8 @@ export type AnalyticsEvent =
   | 'hand_replay_opened'
   | 'hand_replay_stepped'
   | 'bot_action_selected'
-  | 'persistence_error';
+  | 'persistence_error'
+  | 'opponent_selected';
 
 type Params = Record<string, string | number | boolean | null>;
 type Transport = (event: AnalyticsEvent, params: Params) => void;

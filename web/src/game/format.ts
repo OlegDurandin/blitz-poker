@@ -1,4 +1,4 @@
-import type { ActionRecord, Card, Category, Street } from '../engine/types';
+import type { ActionRecord, Card, Category, ShownHand, Street } from '../engine/types';
 
 const RANK_LABEL: Record<string, string> = { T: '10' };
 const RANK_NAME: Record<string, string> = {
@@ -49,10 +49,76 @@ export const CATEGORY_NAME: Record<Category, string> = {
   royal_flush: 'Роял-флеш',
 };
 
-/** Lowercase form for sentences: "Вы — две пары". */
-export function categoryLower(c: Category): string {
-  return CATEGORY_NAME[c].toLowerCase();
+// Rank word forms, indexed by the rank character.
+const RANKS = '23456789TJQKA';
+const NOM = ['двойка', 'тройка', 'четвёрка', 'пятёрка', 'шестёрка', 'семёрка', 'восьмёрка', 'девятка', 'десятка', 'валет', 'дама', 'король', 'туз'];
+/** "до девятки" */
+const GEN = ['двойки', 'тройки', 'четвёрки', 'пятёрки', 'шестёрки', 'семёрки', 'восьмёрки', 'девятки', 'десятки', 'валета', 'дамы', 'короля', 'туза'];
+/** "валеты и короли" */
+const NOM_PL = ['двойки', 'тройки', 'четвёрки', 'пятёрки', 'шестёрки', 'семёрки', 'восьмёрки', 'девятки', 'десятки', 'валеты', 'дамы', 'короли', 'тузы'];
+/** "пара валетов" */
+const GEN_PL = ['двоек', 'троек', 'четвёрок', 'пятёрок', 'шестёрок', 'семёрок', 'восьмёрок', 'девяток', 'десяток', 'валетов', 'дам', 'королей', 'тузов'];
+
+const rankOf = (c: Card) => RANKS.indexOf(c[0]);
+
+/**
+ * Names the made hand with its ranks, e.g. "пара валетов", "фулл-хаус:
+ * валеты и короли". `best` comes from the engine, most significant card first.
+ */
+export function describeHand(h: Pick<ShownHand, 'category' | 'best'>): string {
+  const r = h.best.map(rankOf);
+  switch (h.category) {
+    case 'high_card':
+      return `старшая карта: ${NOM[r[0]]}`;
+    case 'pair':
+      return `пара ${GEN_PL[r[0]]}`;
+    case 'two_pair':
+      return `две пары: ${NOM_PL[r[0]]} и ${NOM_PL[r[2]]}`;
+    case 'three_of_a_kind':
+      return `тройка: ${NOM_PL[r[0]]}`;
+    case 'straight':
+      return `стрит до ${GEN[r[0]]}`;
+    case 'flush':
+      return `флеш до ${GEN[r[0]]}`;
+    case 'full_house':
+      return `фулл-хаус: ${NOM_PL[r[0]]} и ${NOM_PL[r[3]]}`;
+    case 'four_of_a_kind':
+      return `каре: ${NOM_PL[r[0]]}`;
+    case 'straight_flush':
+      return `стрит-флеш до ${GEN[r[0]]}`;
+    case 'royal_flush':
+      return 'роял-флеш';
+  }
 }
+
+/** Cards that form the combination itself; the rest are kickers. */
+const MADE_CARDS: Partial<Record<Category, number>> = {
+  high_card: 1,
+  pair: 2,
+  two_pair: 4,
+  three_of_a_kind: 3,
+  four_of_a_kind: 4,
+};
+
+/**
+ * When both players made the same combination and a kicker decided the pot,
+ * says which, e.g. "Решил кикер: король против девятки". Display only: the
+ * engine has already chosen the winner.
+ */
+export function kickerNote(mine: ShownHand, theirs: ShownHand): string | null {
+  const made = MADE_CARDS[mine.category];
+  if (made === undefined || mine.category !== theirs.category) return null;
+  for (let i = 0; i < 5; i++) {
+    const a = rankOf(mine.best[i]);
+    const b = rankOf(theirs.best[i]);
+    if (a === b) continue;
+    if (i < made) return null; // the combinations themselves differ; the names say so
+    const [hi, lo] = a > b ? [a, b] : [b, a];
+    return `Решил кикер: ${NOM[hi]} против ${GEN[lo]}`;
+  }
+  return null;
+}
+
 
 export const STREET_NAME: Record<Street, string> = {
   preflop: 'Префлоп',
@@ -61,7 +127,6 @@ export const STREET_NAME: Record<Street, string> = {
   river: 'Ривер',
 };
 
-export const BOT_NAME = 'Бот Алекс';
 
 /** Short table label for a recorded action. */
 export function actionLabel(a: ActionRecord): string {

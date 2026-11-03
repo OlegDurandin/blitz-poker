@@ -1,10 +1,12 @@
 import { CardsIcon, ChipIcon, HandshakeIcon, Trophy } from '../components/icons';
 import { PlayingCard } from '../components/PlayingCard';
-import type { MatchResult } from '../engine/types';
-import { BOT_NAME, CATEGORY_NAME, plural } from '../game/format';
+import type { MatchResult, Opponent } from '../engine/types';
+import { describeHand, plural } from '../game/format';
+import { botName } from '../game/opponents';
 
 interface Props {
   result: MatchResult;
+  opponent: Opponent;
   onRematch: () => void;
   onHistory: () => void;
   onHome: () => void;
@@ -16,7 +18,7 @@ const COPY = {
   draw: { title: 'Ничья!', subtitle: 'Стеки сравнялись после восьми раздач' },
 } as const;
 
-export function Result({ result, onRematch, onHistory, onHome }: Props) {
+export function Result({ result, opponent, onRematch, onHistory, onHome }: Props) {
   const copy = COPY[result.outcome];
   const n = result.hands_played;
   return (
@@ -35,7 +37,7 @@ export function Result({ result, onRematch, onHistory, onHome }: Props) {
           </span>
         </div>
         <div className={result.outcome === 'loss' ? 'is-leader' : ''}>
-          <span className="scoreboard__who">{BOT_NAME}</span>
+          <span className="scoreboard__who">{botName(opponent)}</span>
           <span className="scoreboard__chips">
             <ChipIcon /> {result.final_stacks[1]}
           </span>
@@ -52,7 +54,7 @@ export function Result({ result, onRematch, onHistory, onHome }: Props) {
         </li>
         {result.best_hand && (
           <li className="result__best">
-            <span>Лучшая комбинация: {CATEGORY_NAME[result.best_hand.category]}</span>
+            <span>Лучшая комбинация: {describeHand({ category: result.best_hand.category, best: result.best_hand.cards })}</span>
             <span className="result__best-cards">
               {result.best_hand.cards.map((c) => (
                 <PlayingCard key={c} card={c} size="xs" />

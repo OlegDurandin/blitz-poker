@@ -2,13 +2,14 @@
 // transition, so a closed WebView resumes exactly where it was — with the same
 // deck, because the engine snapshot carries the RNG state.
 
-import type { HandRecord, MatchState } from '../engine/types';
+import type { HandRecord, MatchState, Opponent } from '../engine/types';
 
 const KEYS = {
   match: 'blitz.v1.match',
   tutorial: 'blitz.v1.tutorial',
   tutorialDone: 'blitz.v1.tutorial_done',
   stats: 'blitz.v1.stats',
+  opponent: 'blitz.v1.opponent',
   archiveIndex: 'blitz.v1.archive',
   archivePrefix: 'blitz.v1.archive.',
 } as const;
@@ -16,7 +17,10 @@ const KEYS = {
 /** Finished or abandoned matches kept for the history screens. */
 export const ARCHIVE_LIMIT = 30;
 export const ARCHIVE_VERSION = 1;
-export const STATS_VERSION = 2;
+export const STATS_VERSION = 3;
+
+const OPPONENT_IDS: readonly Opponent[] = ['novice', 'station', 'tight', 'alex', 'aggressor'];
+const isOpponent = (x: unknown): x is Opponent => OPPONENT_IDS.includes(x as Opponent);
 
 export type TutorialStep = 'cards' | 'action' | 'result' | 'done';
 
@@ -48,6 +52,8 @@ export interface Stats {
   lastMatchId: string | null;
   /** Guards against counting the same match twice. */
   countedIds: string[];
+  /** Finished-match results per opponent; matches from before 1.2 count for Alex. */
+  byOpponent: Partial<Record<Opponent, Record<'win' | 'loss' | 'draw', number>>>;
 }
 
 export const EMPTY_STATS: Stats = {
@@ -62,6 +68,7 @@ export const EMPTY_STATS: Stats = {
   biggestPot: 0,
   lastMatchId: null,
   countedIds: [],
+  byOpponent: {},
 };
 
 const COUNTED_IDS_LIMIT = 50;
@@ -113,12 +120,15 @@ export function recordResult(
   matchId: string,
   outcome: 'win' | 'loss' | 'draw',
   facts: MatchFacts = { hands: 0, biggestPot: 0 },
+  opponent: Opponent = 'alex',
 ): Stats {
   if (alreadyCounted(s, matchId)) return s;
   const currentStreak = outcome === 'win' ? s.currentStreak + 1 : 0;
+  const vs = s.byOpponent[opponent] ?? { win: 0, loss: 0, draw: 0 };
   return counted(
     {
       ...s,
+      byOpponent: { ...s.byOpponent, [opponent]: { ...vs, [outcome]: vs[outcome] + 1 } },
       wins: s.wins + (outcome === 'win' ? 1 : 0),
       losses: s.losses + (outcome === 'loss' ? 1 : 0),
       draws: s.draws + (outcome === 'draw' ? 1 : 0),
@@ -140,6 +150,16 @@ export function recordAbandon(
   return counted({ ...s, abandoned: s.abandoned + 1 }, matchId, facts);
 }
 
+function parseByOpponent(x: unknown): Stats['byOpponent'] {
+  const out: Stats['byOpponent'] = {};
+  if (!x || typeof x !== 'object') return out;
+  const count = (n: unknown) => (typeof n === 'number' && Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0);
+  for (const [id, r] of Object.entries(x as Record<string, Record<string, unknown>>)) {
+    if (isOpponent(id) && r && typeof r === 'object') out[id] = { win: count(r.win), loss: count(r.loss), draw: count(r.draw) };
+  }
+  return out;
+}
+
 /** Reads stats of any earlier version; unknown or broken fields fall back to defaults. */
 export function parseStats(raw: string | null): Stats {
   if (!raw) return EMPTY_STATS;
@@ -159,6 +179,7 @@ export function parseStats(raw: string | null): Stats {
       biggestPot: count(p.biggestPot),
       lastMatchId: typeof p.lastMatchId === 'string' ? p.lastMatchId : null,
       countedIds: Array.isArray(p.countedIds) ? p.countedIds.filter((id): id is string => typeof id === 'string') : [],
+      byOpponent: parseByOpponent(p.byOpponent),
     };
   } catch {
     return EMPTY_STATS;
@@ -172,6 +193,8 @@ export interface ArchivedMatch {
   status: 'completed' | 'abandoned';
   /** null for abandoned matches. */
   outcome: 'win' | 'loss' | 'draw' | null;
+  /** Missing in records from 1.1, which were all against Alex. */
+  opponent?: Opponent;
   startedAt: number;
   endedAt: number;
   /** `[human, bot]` when the match ended or was abandoned. */
@@ -275,6 +298,13 @@ export const storage = {
   markTutorialDone: () => write(KEYS.tutorialDone, '1'),
 
   loadStats: (): Stats => parseStats(read(KEYS.stats)),
+
+  /** The last opponent picked on the home screen; Alex by default. */
+  loadOpponent(): Opponent {
+    const id = read(KEYS.opponent);
+    return isOpponent(id) ? id : 'alex';
+  },
+  saveOpponent: (id: Opponent) => write(KEYS.opponent, id),
   saveStats: (s: Stats) => write(KEYS.stats, JSON.stringify(s)),
 
   loadArchive(): ArchiveLoad {

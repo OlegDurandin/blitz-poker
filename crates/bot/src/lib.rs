@@ -25,15 +25,121 @@ pub mod reference;
 use poker_core::card::full_deck;
 use poker_core::rng::Rng;
 use poker_core::{
-    ActionKind, ActionRecord, Card, LegalActions, PlayerAction, PlayerView, Seat, Street,
+    ActionKind, ActionRecord, Card, LegalActions, Opponent, PlayerAction, PlayerView, Seat, Street,
     hand_value,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Personality {
-    Standard,
+    /// One of the five opponents the player can pick.
+    Standard(Opponent),
     /// Passive check/call for the training hand.
     Tutorial,
+}
+
+/// Knobs that turn the one strategy below into five distinct opponents.
+/// Probabilities are multiplied and then capped, so `1.0` means Alex's play.
+#[derive(Clone, Copy, Debug)]
+struct Style {
+    /// Small-blind opening share above 16 big blinds, and at 10–16.
+    open_deep: f64,
+    open_mid: f64,
+    /// Chance to limp instead of raising a hand it opens.
+    limp: f64,
+    /// Top share of hands that 3-bet for value.
+    three_bet: f64,
+    /// Added to equity when deciding whether to call (looseness).
+    call_bonus: f64,
+    /// Multipliers for value bets, bluffs/semi-bluffs and raises.
+    value: f64,
+    bluff: f64,
+    raise: f64,
+    /// Multiplier for bet sizes.
+    size: f64,
+    /// Chance to slow-play a monster on the flop.
+    trap: f64,
+    /// Random misjudgement of equity, ± this much.
+    noise: f64,
+    /// Multiplier for the short-stack shoving range.
+    push: f64,
+}
+
+fn style(opponent: Opponent) -> Style {
+    let alex = Style {
+        open_deep: 0.66,
+        open_mid: 0.58,
+        limp: 0.0,
+        three_bet: 0.09,
+        call_bonus: 0.0,
+        value: 1.0,
+        bluff: 1.0,
+        raise: 1.0,
+        size: 1.0,
+        trap: 0.15,
+        noise: 0.0,
+        push: 1.0,
+    };
+    match opponent {
+        Opponent::Alex => alex,
+        Opponent::Novice => Style {
+            open_deep: 0.85,
+            open_mid: 0.8,
+            limp: 0.6,
+            three_bet: 0.02,
+            call_bonus: 0.06,
+            value: 0.7,
+            bluff: 0.6,
+            raise: 0.5,
+            size: 0.55,
+            trap: 0.2,
+            noise: 0.15,
+            push: 1.0,
+        },
+        Opponent::Tight => Style {
+            open_deep: 0.42,
+            open_mid: 0.38,
+            three_bet: 0.06,
+            call_bonus: -0.06,
+            value: 0.85,
+            bluff: 0.3,
+            raise: 0.8,
+            trap: 0.1,
+            push: 0.75,
+            ..alex
+        },
+        Opponent::Station => Style {
+            open_deep: 0.9,
+            open_mid: 0.85,
+            limp: 0.8,
+            three_bet: 0.03,
+            call_bonus: 0.15,
+            value: 0.6,
+            bluff: 0.2,
+            raise: 0.3,
+            size: 0.8,
+            trap: 0.3,
+            noise: 0.03,
+            push: 0.9,
+        },
+        Opponent::Aggressor => Style {
+            open_deep: 0.88,
+            open_mid: 0.8,
+            three_bet: 0.22,
+            call_bonus: 0.02,
+            value: 1.25,
+            bluff: 2.3,
+            raise: 2.0,
+            size: 1.3,
+            trap: 0.05,
+            push: 1.2,
+            ..alex
+        },
+    }
+}
+
+/// A probability scaled by a style multiplier, kept below certainty.
+fn p(base: f64, mult: f64) -> f64 {
+    (base * mult).clamp(0.0, 0.95)
 }
 
 const ITERATIONS: usize = 600;
@@ -52,15 +158,17 @@ fn policy(
     personality: Personality,
     seed: u64,
 ) -> PlayerAction {
-    if personality == Personality::Tutorial {
-        return passive(legal);
-    }
+    let opponent = match personality {
+        Personality::Tutorial => return passive(legal),
+        Personality::Standard(o) => o,
+    };
+    let st = style(opponent);
     let mut rng = Rng::new(seed);
     let s = Situation::new(view);
     if view.street == Street::Preflop {
-        preflop(view, &s, legal, &mut rng)
+        preflop(view, &s, &st, legal, &mut rng)
     } else {
-        postflop(view, &s, legal, &mut rng)
+        postflop(view, &s, &st, legal, &mut rng)
     }
 }
 
@@ -166,7 +274,23 @@ fn push_share(eff: f64) -> f64 {
     }
 }
 
-fn preflop(v: &PlayerView, s: &Situation, legal: &LegalActions, rng: &mut Rng) -> PlayerAction {
+/// Monte Carlo equity, blurred by the style's misjudgement.
+fn felt_equity(v: &PlayerView, st: &Style, rng: &mut Rng) -> f64 {
+    let e = equity(v.hole, &v.board, opponent_range(v), ITERATIONS, rng);
+    if st.noise > 0.0 {
+        (e + (rng.unit() * 2.0 - 1.0) * st.noise).clamp(0.0, 1.0)
+    } else {
+        e
+    }
+}
+
+fn preflop(
+    v: &PlayerView,
+    s: &Situation,
+    st: &Style,
+    legal: &LegalActions,
+    rng: &mut Rng,
+) -> PlayerAction {
     let top = top_share(v.hole);
     let eff = s.effective_bb;
     let shove = all_in(legal);
@@ -177,23 +301,31 @@ fn preflop(v: &PlayerView, s: &Situation, legal: &LegalActions, rng: &mut Rng) -
             if top <= 0.12 && eff > 7.0 && rng.chance(0.25) {
                 return raise_to(legal, s.bb * 2).unwrap_or(PlayerAction::Call);
             }
+            let push = (push_share(eff) * st.push).min(0.95);
+            if top <= push && st.limp > 0.0 && rng.chance(st.limp * 0.5) {
+                return PlayerAction::Call;
+            }
             return match shove {
-                Some(a) if top <= push_share(eff) => a,
-                _ if top <= push_share(eff) => PlayerAction::Call,
+                Some(a) if top <= push => a,
+                _ if top <= push => PlayerAction::Call,
                 _ => PlayerAction::Fold,
             };
         }
-        let open = if eff > 16.0 { 0.66 } else { 0.58 };
-        if top <= 0.05 && rng.chance(0.12) {
+        let open = if eff > 16.0 {
+            st.open_deep
+        } else {
+            st.open_mid
+        };
+        if top <= 0.05 && rng.chance(st.trap * 0.8) {
             return PlayerAction::Call; // occasional trap limp
         }
         if top <= open {
-            let size = if eff > 16.0 {
-                s.bb * 5 / 2
-            } else {
-                s.bb * 9 / 4
-            };
-            return raise_to(legal, size).unwrap_or(PlayerAction::Call);
+            if st.limp > 0.0 && rng.chance(st.limp) {
+                return PlayerAction::Call;
+            }
+            let bb = s.bb as f64;
+            let size = if eff > 16.0 { 2.5 * bb } else { 2.25 * bb } * st.size.max(0.8);
+            return raise_to(legal, size as u32).unwrap_or(PlayerAction::Call);
         }
         if top <= open + 0.15 && rng.chance(0.5) {
             return PlayerAction::Call;
@@ -209,18 +341,19 @@ fn preflop(v: &PlayerView, s: &Situation, legal: &LegalActions, rng: &mut Rng) -
                 _ => PlayerAction::Check,
             };
         }
-        if top <= 0.22 || rng.chance(0.06) {
+        if top <= (0.22 * st.raise).min(0.6) || rng.chance(p(0.06, st.bluff)) {
             return raise_to(legal, s.bb * 4).unwrap_or(PlayerAction::Check);
         }
         return PlayerAction::Check;
     }
 
     // Facing a raise.
-    let equity = equity(v.hole, &v.board, opponent_range(v), ITERATIONS, rng);
+    let equity = felt_equity(v, st, rng);
     let stack = v.stacks[s.me.idx()];
     let committing = legal.call_is_all_in || s.to_call as f64 >= 0.35 * stack as f64;
     if committing {
-        if equity >= s.pot_odds + 0.02 {
+        // Looser styles call off their stack lighter, but only by half as much.
+        if equity + st.call_bonus / 2.0 >= s.pot_odds + 0.02 {
             return match shove {
                 Some(a) if top <= 0.04 => a,
                 _ => PlayerAction::Call,
@@ -229,8 +362,8 @@ fn preflop(v: &PlayerView, s: &Situation, legal: &LegalActions, rng: &mut Rng) -
         return PlayerAction::Fold;
     }
     if s.raises == 1 {
-        let bluff_3bet = (0.3..0.5).contains(&top) && rng.chance(0.06);
-        if top <= 0.09 || bluff_3bet {
+        let bluff_3bet = (0.3..0.5).contains(&top) && rng.chance(p(0.06, st.bluff));
+        if top <= st.three_bet || bluff_3bet {
             let three_bet = if eff <= 20.0 {
                 shove
             } else {
@@ -241,29 +374,35 @@ fn preflop(v: &PlayerView, s: &Situation, legal: &LegalActions, rng: &mut Rng) -
             }
         }
         // Closing the action in the big blind is cheap: defend wide.
-        return if equity + 0.04 >= s.pot_odds {
+        return if equity + 0.04 + st.call_bonus >= s.pot_odds {
             PlayerAction::Call
         } else {
             PlayerAction::Fold
         };
     }
-    if top <= 0.04 {
+    if top <= (st.three_bet * 0.45).max(0.02) {
         return shove.unwrap_or(PlayerAction::Call);
     }
-    if top <= 0.2 && equity >= s.pot_odds + 0.02 {
+    if top <= 0.2 + st.call_bonus * 2.0 && equity + st.call_bonus >= s.pot_odds + 0.02 {
         return PlayerAction::Call;
     }
     PlayerAction::Fold
 }
 
-fn postflop(v: &PlayerView, s: &Situation, legal: &LegalActions, rng: &mut Rng) -> PlayerAction {
-    let equity = equity(v.hole, &v.board, opponent_range(v), ITERATIONS, rng);
+fn postflop(
+    v: &PlayerView,
+    s: &Situation,
+    st: &Style,
+    legal: &LegalActions,
+    rng: &mut Rng,
+) -> PlayerAction {
+    let equity = felt_equity(v, st, rng);
     let draw = v.street != Street::River && strong_draw(v.hole, &v.board);
     let street = v.street;
 
     if legal.check {
         if equity >= 0.85 {
-            if street == Street::Flop && equity >= 0.9 && rng.chance(0.15) {
+            if street == Street::Flop && equity >= 0.9 && rng.chance(st.trap) {
                 return PlayerAction::Check; // trap
             }
             let frac = if street == Street::River {
@@ -271,29 +410,32 @@ fn postflop(v: &PlayerView, s: &Situation, legal: &LegalActions, rng: &mut Rng) 
             } else {
                 rng_frac(rng, 0.6, 0.85)
             };
-            return sized(legal, s, frac, PlayerAction::Check);
+            return sized(legal, s, frac * st.size, PlayerAction::Check);
         }
         if equity >= 0.66 {
-            if rng.chance(0.9) {
-                return sized(legal, s, rng_frac(rng, 0.5, 0.75), PlayerAction::Check);
+            if rng.chance(p(0.9, st.value)) {
+                let frac = rng_frac(rng, 0.5, 0.75) * st.size;
+                return sized(legal, s, frac, PlayerAction::Check);
             }
             return PlayerAction::Check;
         }
         if draw {
-            let p = if street == Street::Flop { 0.5 } else { 0.35 };
-            if rng.chance(p) {
-                return sized(legal, s, rng_frac(rng, 0.5, 0.7), PlayerAction::Check);
+            let base = if street == Street::Flop { 0.5 } else { 0.35 };
+            if rng.chance(p(base, st.bluff)) {
+                let frac = rng_frac(rng, 0.5, 0.7) * st.size;
+                return sized(legal, s, frac, PlayerAction::Check);
             }
             return PlayerAction::Check;
         }
         if equity >= 0.5 {
-            let p = if s.was_aggressor && street == Street::Flop {
+            let base = if s.was_aggressor && street == Street::Flop {
                 0.65
             } else {
                 0.45
             };
-            if rng.chance(p) {
-                return sized(legal, s, rng_frac(rng, 0.33, 0.5), PlayerAction::Check);
+            if rng.chance(p(base, st.value)) {
+                let frac = rng_frac(rng, 0.33, 0.5) * st.size;
+                return sized(legal, s, frac, PlayerAction::Check);
             }
             return PlayerAction::Check;
         }
@@ -305,34 +447,41 @@ fn postflop(v: &PlayerView, s: &Situation, legal: &LegalActions, rng: &mut Rng) 
             _ if s.opponent_checked => 0.12,
             _ => 0.05,
         };
-        if rng.chance(bluff) {
+        if rng.chance(p(bluff, st.bluff)) {
             let frac = if street == Street::River {
                 rng_frac(rng, 0.66, 1.0)
             } else {
                 rng_frac(rng, 0.5, 0.75)
             };
-            return sized(legal, s, frac, PlayerAction::Check);
+            return sized(legal, s, frac * st.size, PlayerAction::Check);
         }
         return PlayerAction::Check;
     }
 
     // Facing a bet.
-    if equity >= 0.8 && s.raises < 3 && rng.chance(0.65) {
-        return sized(legal, s, rng_frac(rng, 0.7, 0.9), PlayerAction::Call);
+    if equity >= 0.8 && s.raises < 3 && rng.chance(p(0.65, st.raise)) {
+        let frac = rng_frac(rng, 0.7, 0.9) * st.size;
+        return sized(legal, s, frac, PlayerAction::Call);
     }
-    if equity >= 0.7 && s.raises < 2 && rng.chance(0.35) {
-        return sized(legal, s, rng_frac(rng, 0.6, 0.8), PlayerAction::Call);
+    if equity >= 0.7 && s.raises < 2 && rng.chance(p(0.35, st.raise)) {
+        let frac = rng_frac(rng, 0.6, 0.8) * st.size;
+        return sized(legal, s, frac, PlayerAction::Call);
     }
-    if draw && street == Street::Flop && s.raises < 2 && rng.chance(0.12) {
-        return sized(legal, s, 0.7, PlayerAction::Call);
+    if draw && street == Street::Flop && s.raises < 2 && rng.chance(p(0.12, st.bluff)) {
+        return sized(legal, s, 0.7 * st.size, PlayerAction::Call);
     }
     let implied = if draw { 0.06 } else { 0.0 };
     let margin = if legal.call_is_all_in { 0.03 } else { 0.01 };
-    if equity + implied >= s.pot_odds + margin {
+    let bonus = if legal.call_is_all_in {
+        st.call_bonus / 2.0
+    } else {
+        st.call_bonus
+    };
+    if equity + implied + bonus >= s.pot_odds + margin {
         return PlayerAction::Call;
     }
-    if s.raises == 1 && street != Street::River && rng.chance(0.025) {
-        return sized(legal, s, 0.75, PlayerAction::Fold);
+    if s.raises == 1 && street != Street::River && rng.chance(p(0.025, st.bluff)) {
+        return sized(legal, s, 0.75 * st.size, PlayerAction::Fold);
     }
     PlayerAction::Fold
 }

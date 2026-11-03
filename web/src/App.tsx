@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ConfirmDialog } from './components/Dialog';
+import { OpponentPicker } from './components/OpponentPicker';
 import { PauseMenu } from './components/PauseMenu';
+import type { Opponent } from './engine/types';
 import { engine, initEngine } from './engine/engine';
 import { track } from './game/analytics';
+import { botName } from './game/opponents';
 import { completedMatches, storage, type ArchiveLoad } from './game/storage';
 import { useGame } from './game/useGame';
 import { History } from './screens/History';
@@ -37,6 +40,8 @@ export function App() {
   const [confirm, setConfirm] = useState<Confirm>(null);
   const [justFinished, setJustFinished] = useState(false);
   const [archive, setArchive] = useState<ArchiveLoad | null>(null);
+  const [opponent, setOpponent] = useState<Opponent>(() => storage.loadOpponent());
+  const [pickerOpen, setPickerOpen] = useState(false);
   const game = useGame({ paused: menuOpen || rulesOpen || confirm !== null });
 
   const boot = useCallback(() => {
@@ -72,12 +77,12 @@ export function App() {
 
   const toTable = (ok: unknown) => ok && setScreen({ name: 'table' });
 
-  const startRealMatch = () => toTable(game.startMatch());
+  const startRealMatch = (against: Opponent = opponent) => toTable(game.startMatch(against));
 
   const onStart = () => {
     const firstLaunch = !storage.isTutorialDone();
     track('start_click', { first_launch: firstLaunch });
-    toTable(firstLaunch ? game.startTutorial() : game.startMatch());
+    toTable(firstLaunch ? game.startTutorial() : game.startMatch(opponent));
   };
 
   const onContinue = () => {
@@ -185,6 +190,8 @@ export function App() {
           onSkipTutorial={skipTutorial}
           onRules={() => setRulesOpen(true)}
           onStats={openStats}
+          opponent={opponent}
+          onPickOpponent={() => setPickerOpen(true)}
         />
       );
       break;
@@ -208,9 +215,10 @@ export function App() {
       content = view?.result ? (
         <Result
           result={view.result}
+          opponent={view.opponent}
           onRematch={() => {
-            track('rematch_clicked', { previous_result: view.result!.outcome });
-            startRealMatch();
+            track('rematch_clicked', { previous_result: view.result!.outcome, opponent: view.opponent });
+            startRealMatch(view.opponent);
           }}
           onHistory={() => {
             track('hand_history_opened', { source: 'result' });
@@ -252,6 +260,7 @@ export function App() {
           title="История раздач"
           subtitle={subtitle}
           hands={historyHands}
+          botName={botName(from === 'result' ? view?.opponent : archived?.opponent)}
           onBack={() => setScreen(from === 'result' ? { name: 'result' } : { name: 'stats' })}
           onOpen={(h) => {
             track('hand_replay_opened', { hand_no: h.number, source: from, finished: h.outcome !== null });
@@ -266,6 +275,7 @@ export function App() {
       content = replayHand ? (
         <Replay
           hand={replayHand}
+          opponent={from === 'result' ? view?.opponent : archive?.matches.find((m) => m.id === matchId)?.opponent}
           load={game.replayHand}
           onClose={({ steps, frames, reachedEnd }) => {
             track('hand_replay_stepped', { steps, frames, reached_end: reachedEnd });
@@ -326,6 +336,20 @@ export function App() {
             setConfirm(null);
             game.discardSaved();
             startRealMatch();
+          }}
+        />
+      )}
+
+      {pickerOpen && (
+        <OpponentPicker
+          selected={opponent}
+          stats={game.stats}
+          onClose={() => setPickerOpen(false)}
+          onSelect={(id) => {
+            setOpponent(id);
+            storage.saveOpponent(id);
+            track('opponent_selected', { opponent: id });
+            setPickerOpen(false);
           }}
         />
       )}

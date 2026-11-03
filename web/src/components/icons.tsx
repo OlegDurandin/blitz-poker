@@ -37,15 +37,16 @@ export function HeroSpade() {
 }
 
 /** Deliberately non-human avatar so it never reads as a real VK user. */
-export function BotAvatar() {
+/** `color` tints the ring and the antenna light per opponent. */
+export function BotAvatar({ color = '#6A95FF' }: { color?: string }) {
   return (
     <svg className="bot-avatar" viewBox="0 0 48 48" aria-hidden="true">
-      <circle cx="24" cy="24" r="23" fill="#23395A" stroke="#6A95FF" strokeWidth="2" />
+      <circle cx="24" cy="24" r="23" fill="#23395A" stroke={color} strokeWidth="2" />
       <rect x="13" y="16" width="22" height="17" rx="6" fill="#C3CFDA" />
       <circle cx="19.5" cy="24.5" r="2.6" fill="#101827" />
       <circle cx="28.5" cy="24.5" r="2.6" fill="#101827" />
       <path d="M24 16v-5" stroke="#C3CFDA" strokeWidth="2.4" strokeLinecap="round" />
-      <circle cx="24" cy="10" r="2.4" fill="#35D69A" />
+      <circle cx="24" cy="10" r="2.4" fill={color} />
       <rect x="18" y="29" width="12" height="2" rx="1" fill="#101827" />
     </svg>
   );

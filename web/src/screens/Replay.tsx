@@ -2,11 +2,14 @@ import { useEffect, useMemo, useState } from 'react';
 import { BotAvatar } from '../components/icons';
 import { PlayingCard } from '../components/PlayingCard';
 import { ActionTag, BetChip, DealerButton, Stack } from '../components/TableParts';
-import type { ActionRecord, Card, HandRecord, ReplayFrame, ReplayResult, Seat } from '../engine/types';
-import { BOT_NAME, STREET_NAME, categoryLower } from '../game/format';
+import type { ActionRecord, Card, HandRecord, Opponent, ReplayFrame, ReplayResult, Seat } from '../engine/types';
+import { STREET_NAME, describeHand, kickerNote } from '../game/format';
+import { botName, opponentInfo } from '../game/opponents';
 
 interface Props {
   hand: HandRecord;
+  /** The bot of that match; missing in archives from before 1.2 (Alex). */
+  opponent?: Opponent;
   /** Pure: builds frames from the record, never touches the live match. */
   load: (hand: HandRecord) => ReplayResult;
   onClose: (stats: { steps: number; frames: number; reachedEnd: boolean }) => void;
@@ -35,25 +38,27 @@ function actionText(a: ActionRecord): string {
 }
 
 /** One factual sentence per step; no advice or judgement. */
-function caption(hand: HandRecord, f: ReplayFrame): string {
+function caption(hand: HandRecord, f: ReplayFrame, bot: string): string {
   const bank = f.pot + f.bets[0] + f.bets[1];
   const e = f.event;
   switch (e.type) {
     case 'start':
-      return `Раздача ${hand.number} · блайнды ${hand.sb}/${hand.bb} · баттон: ${hand.button === 'human' ? 'вы' : BOT_NAME}`;
+      return `Раздача ${hand.number} · блайнды ${hand.sb}/${hand.bb} · баттон: ${hand.button === 'human' ? 'вы' : bot}`;
     case 'action': {
-      const verb = e.action.seat === 'human' ? 'Вы' : BOT_NAME;
+      const verb = e.action.seat === 'human' ? 'Вы' : bot;
       return `${verb}: ${actionText(e.action)} · банк ${bank}`;
     }
     case 'street':
       return `${STREET_NAME[e.street]}${e.runout ? ' · олл-ин, карты открываются без торговли' : ''} · банк ${bank}`;
-    case 'showdown':
-      return `Вскрытие: вы — ${categoryLower(e.hands[0].category)}, ${BOT_NAME} — ${categoryLower(e.hands[1].category)}`;
+    case 'showdown': {
+      const kicker = kickerNote(e.hands[0], e.hands[1]);
+      return `Вскрытие: вы — ${describeHand(e.hands[0])}, ${bot} — ${describeHand(e.hands[1])}${kicker ? `. ${kicker}` : ''}`;
+    }
     case 'award': {
       const stacks = `стеки ${f.stacks[0]} : ${f.stacks[1]}`;
       if (e.winner === null) return `Банк ${e.pot} разделён: по ${e.awarded[0]} и ${e.awarded[1]} · ${stacks}`;
-      const who = e.winner === 'human' ? 'Вы выиграли' : `${BOT_NAME} выиграл`;
-      const why = e.by_fold ? ` (${e.winner === 'human' ? `${BOT_NAME} сбросил карты` : 'вы сбросили карты'})` : '';
+      const who = e.winner === 'human' ? 'Вы выиграли' : `${bot} выиграл`;
+      const why = e.by_fold ? ` (${e.winner === 'human' ? `${bot} сбросил карты` : 'вы сбросили карты'})` : '';
       return `${who} банк ${e.pot}${why} · ${stacks}`;
     }
     case 'unfinished':
@@ -74,7 +79,8 @@ function lastAction(frames: ReplayFrame[], index: number, seat: Seat): ActionRec
   return null;
 }
 
-export function Replay({ hand, load, onClose }: Props) {
+export function Replay({ hand, opponent, load, onClose }: Props) {
+  const bot = botName(opponent);
   const result = useMemo(() => load(hand), [hand, load]);
   const frames = result.ok ? result.frames : [];
   const [index, setIndex] = useState(0);
@@ -140,7 +146,7 @@ export function Replay({ hand, load, onClose }: Props) {
     <main className="replay">
       {header}
 
-      <section className="seat seat--bot" aria-label={BOT_NAME}>
+      <section className="seat seat--bot" aria-label={bot}>
         <div className="seat__cards">
           {showdown ? (
             showdown[1].hole.map((c) => <PlayingCard key={c} card={c} size="sm" {...cardProps(c)} />)
@@ -152,10 +158,10 @@ export function Replay({ hand, load, onClose }: Props) {
           )}
         </div>
         <div className="seat__plate">
-          <BotAvatar />
+          <BotAvatar color={opponentInfo(opponent).color} />
           <div>
             <div className="seat__name">
-              {BOT_NAME}
+              {bot}
               {hand.button === 'bot' && <DealerButton />}
             </div>
             <Stack amount={f.stacks[1]} gain={award ? award.net[1] : 0} />
@@ -165,7 +171,7 @@ export function Replay({ hand, load, onClose }: Props) {
       </section>
 
       <section className="felt replay__felt" aria-label="Стол">
-        <BetChip amount={f.bets[1]} who={BOT_NAME} />
+        <BetChip amount={f.bets[1]} who={bot} />
         <div className={`pot${f.pot > 0 ? '' : ' is-empty'}`}>Банк {f.pot}</div>
         <div className="board" aria-label="Общие карты">
           {Array.from({ length: 5 }, (_, i) =>
@@ -202,7 +208,7 @@ export function Replay({ hand, load, onClose }: Props) {
 
       <div className="dock replay__dock">
         <div className="dock__context replay__caption" aria-live="polite">
-          {caption(hand, f)}
+          {caption(hand, f, bot)}
         </div>
         <div className="replay__controls">
           <button className="btn btn--secondary replay__btn" onClick={() => go(0)} disabled={index === 0} aria-label="В начало">

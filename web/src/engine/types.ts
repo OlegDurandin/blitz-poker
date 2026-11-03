@@ -5,6 +5,8 @@ export type Seat = 'human' | 'bot';
 export type Street = 'preflop' | 'flop' | 'turn' | 'river';
 export type Phase = 'in_hand' | 'hand_over' | 'match_over';
 export type MatchKind = 'standard' | 'tutorial';
+/** The bot the human plays against (engine `Opponent`). */
+export type Opponent = 'novice' | 'station' | 'tight' | 'alex' | 'aggressor';
 /** Two characters: rank `23456789TJQKA` + suit `shdc`, e.g. "As", "Td". */
 export type Card = string;
 
@@ -142,6 +144,7 @@ export interface PlayerView {
   schema: number;
   match_id: string;
   kind: MatchKind;
+  opponent: Opponent;
   phase: Phase;
   me: Seat;
   hand_number: number;

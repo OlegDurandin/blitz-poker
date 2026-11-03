@@ -11,8 +11,8 @@
 
 use bot::Personality;
 use poker_core::{
-    EngineError, HISTORY_SCHEMA_VERSION, HandRecord, Match, MatchKind, PlayerAction, PlayerView,
-    ReplayFrame, Seat, replay,
+    EngineError, HISTORY_SCHEMA_VERSION, HandRecord, Match, MatchKind, Opponent, PlayerAction,
+    PlayerView, ReplayFrame, Seat, replay,
 };
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
@@ -23,6 +23,9 @@ enum Request {
     /// `seed` is a 64-bit hex string (JSON numbers can't carry 64 bits).
     NewMatch {
         seed: String,
+        /// Defaults to Alex for clients from before 1.2.
+        #[serde(default)]
+        opponent: Opponent,
     },
     NewTutorial,
     /// Load and validate a stored snapshot.
@@ -99,10 +102,10 @@ fn load(state: &mut Match) -> Result<(), EngineError> {
 
 fn run(request: Request) -> Result<(Match, Option<PlayerAction>), EngineError> {
     match request {
-        Request::NewMatch { seed } => {
+        Request::NewMatch { seed, opponent } => {
             let seed = u64::from_str_radix(seed.trim_start_matches("0x"), 16)
                 .map_err(|_| EngineError::CorruptSave("seed must be hex"))?;
-            Ok((Match::new(seed), None))
+            Ok((Match::against(seed, opponent), None))
         }
         Request::NewTutorial => Ok((Match::new_tutorial(), None)),
         Request::View { mut state } => {
@@ -117,7 +120,7 @@ fn run(request: Request) -> Result<(Match, Option<PlayerAction>), EngineError> {
         Request::BotAct { mut state } => {
             load(&mut state)?;
             let personality = match state.kind {
-                MatchKind::Standard => Personality::Standard,
+                MatchKind::Standard => Personality::Standard(state.opponent),
                 MatchKind::Tutorial => Personality::Tutorial,
             };
             let action = bot::decide(&state.view(Seat::Bot), personality, state.decision_seed());
@@ -323,6 +326,20 @@ mod tests {
             json!([600, 600])
         );
         assert!(loaded["view"]["history"][0]["hole"].is_null());
+    }
+
+    #[test]
+    fn new_match_records_the_opponent() {
+        let res =
+            send(json!({"cmd": "new_match", "seed": "0000000000000007", "opponent": "tight"}));
+        assert_eq!(res["view"]["opponent"], "tight");
+        let res = send(json!({"cmd": "new_match", "seed": "0000000000000007"}));
+        assert_eq!(
+            res["view"]["opponent"], "alex",
+            "older clients send no opponent"
+        );
+        let bad = send(json!({"cmd": "new_match", "seed": "07", "opponent": "robot"}));
+        assert_eq!(bad["error"]["code"], "bad_request");
     }
 
     #[test]

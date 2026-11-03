@@ -133,6 +133,29 @@ describe('stats', () => {
   });
 });
 
+describe('opponents', () => {
+  it('counts results per opponent and treats old matches as Alex', () => {
+    let s = recordResult(EMPTY_STATS, 'a', 'win', undefined, 'aggressor');
+    s = recordResult(s, 'b', 'loss', undefined, 'aggressor');
+    s = recordResult(s, 'c', 'win');
+    expect(s.byOpponent).toEqual({ aggressor: { win: 1, loss: 1, draw: 0 }, alex: { win: 1, loss: 0, draw: 0 } });
+    expect(recordResult(s, 'a', 'win', undefined, 'aggressor')).toBe(s);
+  });
+
+  it('drops unknown opponents from stored stats', () => {
+    const raw = JSON.stringify({ wins: 1, byOpponent: { tight: { win: 1, loss: 2, draw: 0 }, robot9000: { win: 5 } } });
+    expect(parseStats(raw).byOpponent).toEqual({ tight: { win: 1, loss: 2, draw: 0 } });
+  });
+
+  it('remembers the picked opponent and defaults to Alex', () => {
+    expect(storage.loadOpponent()).toBe('alex');
+    storage.saveOpponent('station');
+    expect(storage.loadOpponent()).toBe('station');
+    mem.setItem('blitz.v1.opponent', 'someone');
+    expect(storage.loadOpponent()).toBe('alex');
+  });
+});
+
 describe('match archive', () => {
   it('upserts by id, newest first, and keeps a bounded number of matches', () => {
     for (let i = 0; i < ARCHIVE_LIMIT + 5; i++) expect(storage.saveArchived(archived(`m${i}`, i))).toBe(true);

@@ -1,6 +1,6 @@
 import { PlayingCard } from '../components/PlayingCard';
 import type { HandRecord } from '../engine/types';
-import { BOT_NAME, STREET_NAME, signed } from '../game/format';
+import { STREET_NAME, signed } from '../game/format';
 import { useScrollMemory } from '../game/scroll';
 
 interface Props {
@@ -8,21 +8,22 @@ interface Props {
   /** One line about the match, e.g. "Победа · 720 : 480". */
   subtitle?: string;
   hands: HandRecord[];
+  botName: string;
   onBack: () => void;
   onOpen: (hand: HandRecord) => void;
 }
 
-function winnerLine(h: HandRecord): string {
+function winnerLine(h: HandRecord, bot: string): string {
   const o = h.outcome;
   if (!o) return 'Не доиграна: матч прерван';
   const how = o.by_fold ? ' (сброс)' : '';
   if (o.winner === 'human') return `Вы выиграли${how}`;
-  if (o.winner === 'bot') return `Выиграл ${BOT_NAME}${how}`;
+  if (o.winner === 'bot') return `Выиграл ${bot}${how}`;
   return 'Банк разделён';
 }
 
 /** Factual list of a match's hands (spec S06): no evaluative advice. */
-export function History({ title, subtitle, hands, onBack, onOpen }: Props) {
+export function History({ title, subtitle, hands, botName, onBack, onOpen }: Props) {
   useScrollMemory(`hands:${title}:${subtitle ?? ''}`);
   return (
     <main className="history">
@@ -48,14 +49,14 @@ export function History({ title, subtitle, hands, onBack, onOpen }: Props) {
                 <button
                   className="history__row"
                   onClick={() => onOpen(h)}
-                  aria-label={`Раздача ${h.number}: ${winnerLine(h)}. Открыть повтор`}
+                  aria-label={`Раздача ${h.number}: ${winnerLine(h, botName)}. Открыть повтор`}
                 >
                   <span className="history__no">#{h.number}</span>
                   <span className="history__main">
                     <span>
                       {o ? `Банк ${o.pot}` : 'Не доиграна'} · {ended}
                     </span>
-                    <span className="history__sub">{winnerLine(h)}</span>
+                    <span className="history__sub">{winnerLine(h, botName)}</span>
                     {h.board.length > 0 && (
                       <span className="history__cards" aria-label="Общие карты">
                         {h.board.map((c) => (

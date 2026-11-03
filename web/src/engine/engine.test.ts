@@ -16,7 +16,7 @@ const chips = (v: PlayerView) => v.stacks[0] + v.stacks[1] + v.bets[0] + v.bets[
 
 describe('wasm engine', () => {
   it('plays a full match with the bot, conserving chips and hiding bot cards', () => {
-    let res = ok(engine.newMatch('0123456789abcdef'));
+    let res = ok(engine.newMatch('alex', '0123456789abcdef'));
     let steps = 0;
     while (res.view.phase !== 'match_over') {
       expect(++steps).toBeLessThan(400);
@@ -45,8 +45,19 @@ describe('wasm engine', () => {
     expect(res.view.history).toHaveLength(result.hands_played);
   });
 
+  it('plays against the chosen opponent and loads pre-1.2 saves as Alex', () => {
+    let res = ok(engine.newMatch('aggressor', '1234123412341234'));
+    expect(res.view.opponent).toBe('aggressor');
+    if (res.view.to_act === 'human') res = ok(engine.act(res.state, { type: 'call' }));
+    res = ok(engine.botAct(res.state));
+    expect(res.view.opponent).toBe('aggressor');
+    const old = { ...(res.state as Record<string, unknown>) };
+    delete old.opponent;
+    expect(ok(engine.load(old)).view.opponent).toBe('alex');
+  });
+
   it('restores a snapshot without reshuffling', () => {
-    const start = ok(engine.newMatch('feedfacecafebeef'));
+    const start = ok(engine.newMatch('alex', 'feedfacecafebeef'));
     const restored = ok(engine.load(JSON.parse(JSON.stringify(start.state))));
     expect(restored.view.hole).toEqual(start.view.hole);
     expect(restored.view).toEqual(start.view);
@@ -63,7 +74,7 @@ describe('wasm engine', () => {
   });
 
   it('reports incompatible and tampered saves', () => {
-    const t = ok(engine.newMatch('00000000000000aa'));
+    const t = ok(engine.newMatch('alex', '00000000000000aa'));
     const old = { ...(t.state as object), schema: 99 };
     const res = engine.load(old);
     expect(!res.ok && res.error.code).toBe('incompatible_save');
@@ -73,7 +84,7 @@ describe('wasm engine', () => {
   });
 
   it('archives every hand and replays it to the recorded outcome without touching the match', () => {
-    let res = ok(engine.newMatch('5eed5eed5eed5eed'));
+    let res = ok(engine.newMatch('alex', '5eed5eed5eed5eed'));
     let guard = 0;
     while (res.view.phase !== 'match_over') {
       expect(++guard).toBeLessThan(400);
@@ -113,7 +124,7 @@ describe('wasm engine', () => {
   });
 
   it('archives an abandoned match with its unfinished hand', () => {
-    let res = ok(engine.newMatch('abad0abad0abad00'));
+    let res = ok(engine.newMatch('alex', 'abad0abad0abad00'));
     if (res.view.to_act === 'bot') res = ok(engine.botAct(res.state));
     const history = engine.history(res.state);
     if (!history.ok) throw new Error(history.error.message);

@@ -209,6 +209,33 @@ mod tests {
         assert_eq!(wheel.cards.to_vec(), cards("5s 4h 3c 2d As"));
     }
 
+    /// Two showdowns reported from a real device (1.1): both were scored
+    /// correctly; the UI now names the ranks and the deciding kicker.
+    #[test]
+    fn reported_showdowns() {
+        // Board K K J J 4: J6 makes jacks full of kings, A2 only the board's two pair.
+        let board = "Kd Ks Jc Jh 4c";
+        let human = best_hand(&cards(&format!("Js 6d {board}")));
+        let bot = best_hand(&cards(&format!("Ac 2c {board}")));
+        assert_eq!(human.category(), Category::FullHouse);
+        assert_eq!(human.cards[..3], cards("Js Jc Jh")[..], "trips first");
+        assert_eq!(bot.category(), Category::TwoPair);
+        assert_eq!(bot.cards.to_vec(), cards("Kd Ks Jc Jh Ac"));
+        assert!(human.value > bot.value);
+
+        // Board 7 6 5 J J: both play the board's jacks; the king kicker beats the nine.
+        let board = "7h 6s 5c Jd Jh";
+        let human = best_hand(&cards(&format!("9h 3c {board}")));
+        let bot = best_hand(&cards(&format!("Kc 3h {board}")));
+        assert_eq!(
+            (human.category(), bot.category()),
+            (Category::Pair, Category::Pair)
+        );
+        assert_eq!(human.cards.to_vec(), cards("Jd Jh 9h 7h 6s"));
+        assert_eq!(bot.cards.to_vec(), cards("Jd Jh Kc 7h 6s"));
+        assert!(bot.value > human.value);
+    }
+
     #[test]
     fn exhaustive_five_card_category_counts() {
         // Known distribution over all C(52,5) = 2,598,960 hands.

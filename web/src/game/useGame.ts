@@ -4,7 +4,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { engine } from '../engine/engine';
-import type { EngineResult, MatchState, PlayerAction, PlayerView } from '../engine/types';
+import type { EngineResult, MatchState, Opponent, PlayerAction, PlayerView } from '../engine/types';
 import { track } from './analytics';
 import {
   ARCHIVE_VERSION,
@@ -56,6 +56,7 @@ function archiveMatch(state: MatchState, view: PlayerView, meta: SessionMeta): M
     outcome: finished ? view.result!.outcome : null,
     startedAt: meta.startedAt,
     endedAt: Date.now(),
+    opponent: view.opponent,
     finalStacks: finished ? view.result!.final_stacks : view.stacks,
     hands: res.hands,
   });
@@ -109,11 +110,11 @@ export function useGame({ paused }: { paused: boolean }) {
     return next;
   }, []);
 
-  const startMatch = useCallback(() => {
+  const startMatch = useCallback((opponent: Opponent) => {
     const firstMatch = storage.loadStats().lastMatchId === null;
     const now = Date.now();
-    const next = commit(engine.newMatch(), { startedAt: now, handStartedAt: now, firstMatch });
-    if (next) track('match_started', { match_id: next.view.match_id, is_first_match: firstMatch });
+    const next = commit(engine.newMatch(opponent), { startedAt: now, handStartedAt: now, firstMatch });
+    if (next) track('match_started', { match_id: next.view.match_id, is_first_match: firstMatch, opponent });
     return next;
   }, [commit]);
 
@@ -166,13 +167,14 @@ export function useGame({ paused }: { paused: boolean }) {
     if (next && next.view.phase === 'match_over' && next.view.kind === 'standard') {
       const result = next.view.result!;
       const facts = archiveMatch(next.state, next.view, next.meta);
-      const updated = recordResult(storage.loadStats(), next.view.match_id, result.outcome, facts);
+      const updated = recordResult(storage.loadStats(), next.view.match_id, result.outcome, facts, next.view.opponent);
       storage.saveStats(updated);
       setStats(updated);
       track('match_completed', {
         duration_ms: Date.now() - next.meta.startedAt,
         result: result.outcome,
         hands_played: result.hands_played,
+        opponent: next.view.opponent,
       });
     }
     return next;

@@ -10,8 +10,8 @@ pub mod rng;
 pub use card::{Card, Suit};
 pub use engine::{
     ActionKind, ActionRecord, EngineError, HANDS_PER_MATCH, HandOutcome, HandSummary, LegalActions,
-    Match, MatchKind, MatchOutcome, MatchResult, Phase, PlayerAction, PlayerView, RaiseKind,
-    SCHEMA_VERSION, STARTING_STACK, Seat, Street, TOTAL_CHIPS,
+    Match, MatchKind, MatchOutcome, MatchResult, Opponent, Phase, PlayerAction, PlayerView,
+    RaiseKind, SCHEMA_VERSION, STARTING_STACK, Seat, Street, TOTAL_CHIPS,
 };
 pub use eval::{BestHand, Category, HandValue, best_hand, hand_value};
 pub use history::{

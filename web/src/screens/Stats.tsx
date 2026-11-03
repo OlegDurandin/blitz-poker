@@ -1,4 +1,6 @@
+import { BotAvatar } from '../components/icons';
 import { plural } from '../game/format';
+import { OPPONENTS, botName } from '../game/opponents';
 import { useScrollMemory } from '../game/scroll';
 import { winRate, type ArchivedMatch, type Stats as StatsData } from '../game/storage';
 
@@ -89,6 +91,30 @@ export function Stats({ stats, matches, skipped, onBack, onOpenMatch }: Props) {
         </p>
       </section>
 
+      {OPPONENTS.some((o) => stats.byOpponent[o.id]) && (
+        <>
+          <h2 className="stats__heading">По соперникам</h2>
+          <ul className="stats-card vs-list">
+            {OPPONENTS.filter((o) => stats.byOpponent[o.id]).map((o) => {
+              const r = stats.byOpponent[o.id]!;
+              return (
+                <li key={o.id} className="vs-list__row">
+                  <BotAvatar color={o.color} />
+                  <span className="vs-list__name">
+                    {o.name}
+                    <span className="history__sub">{o.style}</span>
+                  </span>
+                  <span className="vs-list__score" aria-label={`Победы ${r.win}, поражения ${r.loss}, ничьи ${r.draw}`}>
+                    <span className="tone-win">{r.win}</span> – <span>{r.loss}</span>
+                    {r.draw > 0 && <span className="history__sub"> · {r.draw} н.</span>}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </>
+      )}
+
       <h2 className="stats__heading">Последние матчи</h2>
       {skipped > 0 && (
         <p className="stats__warning" role="status">
@@ -109,10 +135,11 @@ export function Stats({ stats, matches, skipped, onBack, onOpenMatch }: Props) {
                 <button
                   className="history__row"
                   onClick={() => onOpenMatch(m)}
-                  aria-label={`${label}, ${matchDate(m)}, ${n} ${plural(n, 'раздача', 'раздачи', 'раздач')}. Открыть раздачи`}
+                  aria-label={`${label}, соперник ${botName(m.opponent)}, ${matchDate(m)}, ${n} ${plural(n, 'раздача', 'раздачи', 'раздач')}. Открыть раздачи`}
                 >
                   <span className="history__main">
                     <span className={tone}>{label}</span>
+                    <span className="history__sub">Соперник: {botName(m.opponent)}</span>
                     <span className="history__sub">
                       {matchDate(m)} · {n} {plural(n, 'раздача', 'раздачи', 'раздач')}
                     </span>

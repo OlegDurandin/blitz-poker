@@ -1,7 +1,7 @@
 // Loads the Rust engine (crates/poker-wasm) and exposes typed commands.
 // ABI: alloc(len) → ptr, call(ptr, len) → response length, out_ptr() → response.
 
-import type { EngineResult, HandRecord, HistoryResult, MatchState, PlayerAction, ReplayResult } from './types';
+import type { EngineResult, HandRecord, HistoryResult, MatchState, Opponent, PlayerAction, ReplayResult } from './types';
 
 interface Exports {
   memory: WebAssembly.Memory;
@@ -47,7 +47,7 @@ function randomSeed(): string {
 }
 
 export const engine = {
-  newMatch: (seed: string = randomSeed()) => call({ cmd: 'new_match', seed }),
+  newMatch: (opponent: Opponent = 'alex', seed: string = randomSeed()) => call({ cmd: 'new_match', seed, opponent }),
   newTutorial: () => call({ cmd: 'new_tutorial' }),
   /** Validates a stored snapshot and returns its view. */
   load: (state: MatchState) => call({ cmd: 'view', state }),

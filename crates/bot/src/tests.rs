@@ -1,7 +1,7 @@
 use super::*;
 use crate::reference::{Policy, calling_station, random_legal, tight_aggressive};
 use poker_core::card::cards;
-use poker_core::{Match, MatchOutcome, Phase};
+use poker_core::{Match, MatchOutcome, Opponent, Phase};
 
 fn c2(s: &str) -> [Card; 2] {
     let v = cards(s);
@@ -80,9 +80,20 @@ fn play_match(
     seed: u64,
     bot_seat: Seat,
     opponent: Policy,
+    observe: impl FnMut(&PlayerView, PlayerAction),
+) -> Match {
+    play_match_as(Opponent::Alex, seed, bot_seat, opponent, observe)
+}
+
+/// Like [`play_match`], with the bot playing as `who`.
+fn play_match_as(
+    who: Opponent,
+    seed: u64,
+    bot_seat: Seat,
+    opponent: Policy,
     mut observe: impl FnMut(&PlayerView, PlayerAction),
 ) -> Match {
-    let mut m = Match::new(seed);
+    let mut m = Match::against(seed, who);
     while m.phase != Phase::MatchOver {
         if m.phase != Phase::InHand {
             m.next_hand().unwrap();
@@ -91,7 +102,7 @@ fn play_match(
         let seat = m.hand.to_act.unwrap();
         let v = m.view(seat);
         let a = if seat == bot_seat {
-            let a = decide(&v, Personality::Standard, m.decision_seed());
+            let a = decide(&v, Personality::Standard(who), m.decision_seed());
             observe(&v, a);
             a
         } else {
@@ -111,15 +122,16 @@ fn strategy_is_always_legal() {
     let opponents: [Policy; 3] = [random_legal, tight_aggressive, calling_station];
     while decisions < 20_000 {
         let opponent = opponents[seed as usize % 3];
+        let who = Opponent::ALL[seed as usize % 5];
         let seat = if seed % 2 == 0 {
             Seat::Bot
         } else {
             Seat::Human
         };
-        play_match(seed, seat, opponent, |v, final_action| {
+        play_match_as(who, seed, seat, opponent, |v, final_action| {
             let legal = v.legal.as_ref().unwrap();
             let seed = 0; // the raw policy is re-run with fixed randomness
-            let raw = policy(v, legal, Personality::Standard, seed);
+            let raw = policy(v, legal, Personality::Standard(who), seed);
             assert!(is_legal(v, raw), "raw {raw:?} illegal for {legal:?}");
             assert!(is_legal(v, final_action));
             decisions += 1;
@@ -288,6 +300,111 @@ fn beats_reference_opponents() {
     }
 }
 
+#[derive(Default, Debug)]
+struct StyleStats {
+    preflop: u32,
+    preflop_folds: u32,
+    postflop: u32,
+    aggressive: u32,
+    facing_bet: u32,
+    folds_to_bet: u32,
+}
+
+impl StyleStats {
+    fn preflop_fold(&self) -> f64 {
+        self.preflop_folds as f64 / self.preflop.max(1) as f64
+    }
+    /// Share of postflop decisions that are bets or raises.
+    fn aggression(&self) -> f64 {
+        self.aggressive as f64 / self.postflop.max(1) as f64
+    }
+    fn fold_to_bet(&self) -> f64 {
+        self.folds_to_bet as f64 / self.facing_bet.max(1) as f64
+    }
+}
+
+fn style_stats(who: Opponent) -> StyleStats {
+    let mut st = StyleStats::default();
+    let opponents: [Policy; 3] = [random_legal, tight_aggressive, calling_station];
+    for seed in 0..90u64 {
+        let seat = if seed % 2 == 0 {
+            Seat::Bot
+        } else {
+            Seat::Human
+        };
+        play_match_as(
+            who,
+            seed * 13 + 5,
+            seat,
+            opponents[seed as usize % 3],
+            |v, a| {
+                if v.street == Street::Preflop {
+                    st.preflop += 1;
+                    st.preflop_folds += (a == PlayerAction::Fold) as u32;
+                    return;
+                }
+                st.postflop += 1;
+                if v.to_call > 0 {
+                    st.facing_bet += 1;
+                    st.folds_to_bet += (a == PlayerAction::Fold) as u32;
+                }
+                if let PlayerAction::RaiseTo { .. } = a {
+                    st.aggressive += 1;
+                }
+            },
+        );
+    }
+    st
+}
+
+/// The five opponents must feel different: the cautious one folds most, the
+/// aggressor bets most, the calling station almost never lets go.
+#[test]
+fn opponents_have_distinct_styles() {
+    let [novice, station, tight, alex, aggressor] = Opponent::ALL.map(style_stats);
+    assert!(
+        tight.preflop_fold() > alex.preflop_fold() + 0.05
+            && alex.preflop_fold() > station.preflop_fold() + 0.05,
+        "preflop folds: tight {tight:?} alex {alex:?} station {station:?}"
+    );
+    assert!(
+        aggressor.aggression() > alex.aggression() * 1.15
+            && alex.aggression() > station.aggression() * 1.5,
+        "aggression: aggressor {:.2} alex {:.2} station {:.2}",
+        aggressor.aggression(),
+        alex.aggression(),
+        station.aggression()
+    );
+    assert!(
+        station.fold_to_bet() < tight.fold_to_bet() - 0.1,
+        "fold to bet: station {:.2} tight {:.2}",
+        station.fold_to_bet(),
+        tight.fold_to_bet()
+    );
+    assert!(
+        novice.preflop_fold() < alex.preflop_fold(),
+        "the novice plays loose"
+    );
+}
+
+fn alex(v: &PlayerView, seed: u64) -> PlayerAction {
+    decide(v, Personality::Standard(Opponent::Alex), seed)
+}
+
+/// The novice is the easy pick: over duplicate deals it loses to Alex.
+#[test]
+fn novice_is_easier_than_alex() {
+    let mut chips = 0i64;
+    for seed in 0..120u64 {
+        for seat in Seat::BOTH {
+            let m = play_match_as(Opponent::Novice, seed * 7919 + 3, seat, alex, |_, _| {});
+            chips += m.stacks[seat.idx()] as i64 - 600;
+        }
+    }
+    let avg = chips as f64 / 240.0;
+    assert!(avg < 0.0, "novice vs alex: {avg:+.0} chips per match");
+}
+
 #[test]
 fn tutorial_bot_is_passive() {
     let mut m = Match::new_tutorial();
@@ -304,8 +421,8 @@ fn decisions_are_reproducible() {
         let seat = m.hand.to_act.unwrap();
         let v = m.view(seat);
         assert_eq!(
-            decide(&v, Personality::Standard, m.decision_seed()),
-            decide(&v, Personality::Standard, m.decision_seed())
+            decide(&v, Personality::Standard(Opponent::Alex), m.decision_seed()),
+            decide(&v, Personality::Standard(Opponent::Alex), m.decision_seed())
         );
     }
 }
