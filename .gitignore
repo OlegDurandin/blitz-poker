@@ -10,3 +10,8 @@ node_modules/
 .env
 .env.*
 !.env.example
+
+# PvP server database (local runs)
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
