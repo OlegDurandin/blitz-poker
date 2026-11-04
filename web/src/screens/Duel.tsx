@@ -4,7 +4,7 @@ import { ChipIcon, HandshakeIcon, Trophy, CardsIcon } from '../components/icons'
 import { PlayingCard } from '../components/PlayingCard';
 import { describeHand, plural } from '../game/format';
 import { track } from '../game/analytics';
-import { inviteLink } from '../pvp/config';
+import { inviteLink, parseRoom } from '../pvp/config';
 import type { RoomView, SlotView } from '../pvp/types';
 import type { Duel as DuelController } from '../pvp/useDuel';
 import { copyText, shareLink } from '../vk';
@@ -14,6 +14,8 @@ interface Props {
   duel: DuelController;
   /** Opened from an invite link; otherwise this player creates a room. */
   inviteRoomId: string | null;
+  /** Opens a friend's room from a pasted invite link. */
+  onOpenInvite: (roomId: string) => void;
   onExit: () => void;
   onRules: () => void;
 }
@@ -47,7 +49,54 @@ function Center({ title, text, children }: { title: string; text?: string; child
   );
 }
 
-export function Duel({ duel, inviteRoomId, onExit, onRules }: Props) {
+/** "Друг уже прислал ссылку?": joins without relying on VK passing the link through. */
+function PasteInvite({ ownRoom, onOpen }: { ownRoom: string; onOpen: (roomId: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState('');
+  const [bad, setBad] = useState(false);
+  if (!open) {
+    return (
+      <button className="btn btn--ghost btn--block" onClick={() => setOpen(true)}>
+        Друг уже прислал ссылку?
+      </button>
+    );
+  }
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const id = parseRoom(text);
+    if (!id || id === ownRoom) return setBad(true);
+    track('duel_invite_pasted', {});
+    onOpen(id);
+  };
+  return (
+    <form className="duel-paste" onSubmit={submit}>
+      <label className="duel__hint" htmlFor="duel-paste">
+        Скопируйте ссылку из сообщения друга и вставьте сюда
+      </label>
+      <input
+        id="duel-paste"
+        className="duel-paste__input"
+        value={text}
+        onChange={(e) => {
+          setText(e.target.value);
+          setBad(false);
+        }}
+        placeholder="https://vk.com/app…#room=…"
+        autoComplete="off"
+        autoCapitalize="off"
+        spellCheck={false}
+        aria-invalid={bad}
+        autoFocus
+      />
+      {bad && <p className="duel-paste__error">Это не ссылка на чужую комнату</p>}
+      <button type="submit" className="btn btn--primary btn--block" disabled={!text.trim()}>
+        Войти в комнату
+      </button>
+    </form>
+  );
+}
+
+export function Duel({ duel, inviteRoomId, onOpenInvite, onExit, onRules }: Props) {
   const { state } = duel;
   const room = state.room;
   const asked = useRef(false);
@@ -314,6 +363,7 @@ export function Duel({ duel, inviteRoomId, onExit, onRules }: Props) {
           >
             Скопировать ссылку
           </button>
+          <PasteInvite ownRoom={room.room_id} onOpen={onOpenInvite} />
         </section>
       )}
 

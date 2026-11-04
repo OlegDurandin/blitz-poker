@@ -34,11 +34,33 @@ export function inviteLink(roomId: string): string {
   return `${window.location.origin}${window.location.pathname}${window.location.search}#${hash}`;
 }
 
+const ROOM_ID = /^[A-Za-z0-9_-]{16,64}$/;
+
+/**
+ * The room id in an invite link, a fragment or a bare id. Lenient on purpose:
+ * VK clients may hand the fragment over percent-encoded ("room%3D…") or with
+ * a leading slash, and a player may paste the whole link.
+ */
+export function parseRoom(text: string | null | undefined): string | null {
+  let s = (text ?? '').trim();
+  if (ROOM_ID.test(s)) return s;
+  for (let i = 0; i < 3; i++) {
+    const m = /room=([A-Za-z0-9_-]{16,64})(?![A-Za-z0-9_-])/.exec(s);
+    if (m) return m[1];
+    try {
+      const decoded = decodeURIComponent(s);
+      if (decoded === s) break;
+      s = decoded;
+    } catch {
+      break;
+    }
+  }
+  return null;
+}
+
 /** The room id from an invite link opened in the app, if any. */
 export function roomFromLocation(): string | null {
-  const hash = window.location.hash.replace(/^#/, '');
-  const id = new URLSearchParams(hash).get('room');
-  return id && /^[A-Za-z0-9_-]{16,64}$/.test(id) ? id : null;
+  return parseRoom(window.location.hash) ?? parseRoom(window.location.search);
 }
 
 const ACTIVE_ROOM_KEY = 'blitz.v1.duel_room';

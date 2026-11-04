@@ -25,6 +25,7 @@ export type AnalyticsEvent =
   | 'duel_room_created'
   | 'duel_invite_shared'
   | 'duel_invite_copied'
+  | 'duel_invite_pasted'
   | 'duel_joined'
   | 'duel_rematch_requested';
 

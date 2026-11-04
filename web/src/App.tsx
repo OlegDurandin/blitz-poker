@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ConfirmDialog } from './components/Dialog';
 import { OpponentPicker } from './components/OpponentPicker';
 import { PauseMenu } from './components/PauseMenu';
@@ -8,7 +8,7 @@ import { track } from './game/analytics';
 import { botName } from './game/opponents';
 import { completedMatches, storage, type ArchiveLoad } from './game/storage';
 import { useGame } from './game/useGame';
-import { PVP_URL, activeRoom, clearRoomFromLocation, roomFromLocation } from './pvp/config';
+import { PVP_URL, activeRoom, clearRoomFromLocation, parseRoom, roomFromLocation } from './pvp/config';
 import { useDuel } from './pvp/useDuel';
 import { Duel } from './screens/Duel';
 import { History } from './screens/History';
@@ -19,6 +19,7 @@ import { Rules } from './screens/Rules';
 import { Stats, matchDate, matchLabel } from './screens/Stats';
 import { EngineError, SaveError } from './screens/SaveError';
 import { Table } from './screens/Table';
+import { onVkLocation } from './vk';
 
 type Screen =
   | { name: 'loading' }
@@ -80,6 +81,30 @@ export function App() {
   }, []);
 
   useEffect(boot, [boot]);
+
+  // Opens a friend's room: from an invite tapped while the app was already
+  // open, or a link pasted on the duel screen. A room of one's own that nobody
+  // has joined yet is left for it; a match in progress is never interrupted.
+  const duelRef = useRef(duel);
+  duelRef.current = duel;
+  const openInvite = useCallback((id: string) => {
+    if (!PVP_URL) return;
+    const room = duelRef.current.state.room;
+    if (room && room.room_id === id) return;
+    if (room && room.status !== 'waiting' && room.status !== 'closed') return;
+    if (room) duelRef.current.leave();
+    track('duel_opened', { source: 'invite' });
+    setScreen({ name: 'duel', invite: id });
+  }, []);
+
+  useEffect(
+    () =>
+      onVkLocation((location) => {
+        const id = parseRoom(location);
+        if (id) openInvite(id);
+      }),
+    [openInvite],
+  );
 
   // Saves already happen after every action; this covers the app going to background.
   useEffect(() => {
@@ -259,6 +284,7 @@ export function App() {
           key={screen.invite ?? 'host'}
           duel={duel}
           inviteRoomId={screen.invite}
+          onOpenInvite={openInvite}
           onRules={() => setRulesOpen(true)}
           onExit={() => {
             clearRoomFromLocation();

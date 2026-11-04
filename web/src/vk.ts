@@ -66,3 +66,22 @@ export async function copyText(text: string): Promise<boolean> {
     }
   }
 }
+
+/**
+ * An invite link tapped while the app is already open: VK does not reload the
+ * page, it reports the new fragment. Calls back with the raw location.
+ */
+export function onVkLocation(cb: (location: string) => void): () => void {
+  const listener = (e: { detail?: { type?: string; data?: unknown } }) => {
+    if (e.detail?.type !== 'VKWebAppLocationChanged') return;
+    const loc = (e.detail.data as { location?: unknown } | undefined)?.location;
+    if (typeof loc === 'string') cb(loc);
+  };
+  const onHash = () => cb(window.location.hash);
+  bridge.subscribe(listener as Parameters<typeof bridge.subscribe>[0]);
+  window.addEventListener('hashchange', onHash);
+  return () => {
+    bridge.unsubscribe(listener as Parameters<typeof bridge.unsubscribe>[0]);
+    window.removeEventListener('hashchange', onHash);
+  };
+}
