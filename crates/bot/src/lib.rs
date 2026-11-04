@@ -176,8 +176,9 @@ fn policy(
 /// the engine accepts.
 fn sanitize(legal: &LegalActions, action: PlayerAction) -> PlayerAction {
     match action {
-        PlayerAction::Fold if legal.fold => action,
-        PlayerAction::Fold => PlayerAction::Check,
+        // Folding is always legal, but never give up a free check.
+        PlayerAction::Fold if legal.check => PlayerAction::Check,
+        PlayerAction::Fold => action,
         PlayerAction::Check if legal.check => action,
         PlayerAction::Check => PlayerAction::Fold,
         PlayerAction::Call if legal.call.is_some() => action,

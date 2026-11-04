@@ -218,6 +218,8 @@ pub struct RaiseOption {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LegalActions {
+    /// Always allowed: a player may give up a hand they do not want to play
+    /// even when checking is free.
     pub fold: bool,
     pub check: bool,
     /// Chips needed to call (capped by the stack), if calling is possible.
@@ -729,7 +731,7 @@ impl Match {
             .flatten();
 
         Some(LegalActions {
-            fold: to_call > 0,
+            fold: true,
             check: to_call == 0,
             call: (to_call > 0).then_some(to_call.min(stack)),
             call_is_all_in: to_call > 0 && to_call >= stack,

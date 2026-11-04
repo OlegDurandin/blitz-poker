@@ -55,7 +55,8 @@ fn big_blind_gets_option_after_limp() {
     m.apply(H, PlayerAction::Call).unwrap();
     assert_eq!(m.hand.to_act, Some(B));
     let legal = m.legal_actions(B).unwrap();
-    assert!(legal.check && !legal.fold && legal.call.is_none());
+    assert!(legal.check && legal.call.is_none());
+    assert!(legal.fold, "giving up is always allowed");
     assert_eq!(legal.raise.unwrap().min_to, 40);
     m.apply(B, PlayerAction::Check).unwrap();
     assert_eq!(m.hand.street, Street::Flop);
@@ -125,16 +126,6 @@ fn fold_awards_pot_and_hides_cards() {
     assert!(m.view(H).opponent_hole.is_none());
     assert!(m.history[0].outcome.showdown.is_none());
     assert_chips(&m);
-}
-
-#[test]
-fn fold_not_offered_when_check_is_free() {
-    let mut m = setup([600, 600], H, 1, DECK);
-    m.apply(H, PlayerAction::Call).unwrap();
-    assert_eq!(
-        m.apply(B, PlayerAction::Fold),
-        Err(EngineError::IllegalAction)
-    );
 }
 
 #[test]
@@ -370,4 +361,16 @@ fn random_play_fuzz() {
             assert_eq!(pair[0].number + 1, pair[1].number);
         }
     }
+}
+
+#[test]
+fn folding_instead_of_a_free_check_gives_the_pot_away() {
+    let mut m = setup([600, 600], H, 1, DECK);
+    m.apply(H, PlayerAction::Call).unwrap();
+    // Big blind could check for free but does not want to play these cards.
+    m.apply(B, PlayerAction::Fold).unwrap();
+    assert_eq!(m.phase, Phase::HandOver);
+    let o = m.hand.outcome.as_ref().unwrap();
+    assert_eq!(o.winner, Some(H));
+    assert_eq!(m.stacks, [620, 580]);
 }
