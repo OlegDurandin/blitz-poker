@@ -154,6 +154,13 @@ export function Duel({ duel, inviteRoomId, onOpenInvite, enterCode = false, onEx
     onOpenInvite(preview.room_id);
   }, [preview, room, onOpenInvite]);
 
+  // A code that found nothing: later previews are not the answer to it.
+  useEffect(() => {
+    if (state.error && ['code_not_found', 'too_many_attempts', 'bad_request'].includes(state.error.code)) {
+      byCode.current = false;
+    }
+  }, [state.error]);
+
   const [keepRoom, setKeepRoom] = useState(false);
   const isGuest = !inVk() && devUserId() === null;
   const [guestName, setGuestName] = useState(() => guest.name());

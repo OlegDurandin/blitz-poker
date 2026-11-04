@@ -84,11 +84,20 @@ export function App() {
 
   // Opens a friend's room: from an invite tapped while the app was already
   // open, or a link pasted on the duel screen. A room of one's own that nobody
-  // has joined yet is left for it; a match in progress is never interrupted.
+  // has joined yet is left for it; a match in progress is never interrupted:
+  // during a solo game (or before boot) the invite waits for the home screen.
   const duelRef = useRef(duel);
   duelRef.current = duel;
+  const screenRef = useRef(screen);
+  screenRef.current = screen;
+  const queuedInvite = useRef<string | null>(null);
   const openInvite = useCallback((id: string) => {
     if (!PVP_URL) return;
+    if (['loading', 'table', 'save_error', 'engine_error'].includes(screenRef.current.name)) {
+      queuedInvite.current = id;
+      return;
+    }
+    queuedInvite.current = null;
     const room = duelRef.current.state.room;
     if (room && room.room_id === id) return;
     if (room && room.status !== 'waiting' && room.status !== 'closed') return;
@@ -96,6 +105,12 @@ export function App() {
     track('duel_opened', { source: 'invite' });
     setScreen({ name: 'duel', invite: id });
   }, []);
+
+  useEffect(() => {
+    // Boot (or a click) already opened that room: nothing left to do later.
+    if (screen.name === 'duel' && screen.invite === queuedInvite.current) queuedInvite.current = null;
+    if (screen.name === 'home' && queuedInvite.current) openInvite(queuedInvite.current);
+  }, [screen, openInvite]);
 
   useEffect(
     () =>

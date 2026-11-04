@@ -23,6 +23,8 @@ describe('parseRoom', () => {
     expect(parseRoom('https://vk.com/app123')).toBeNull();
     expect(parseRoom('#room=short')).toBeNull();
     expect(parseRoom('%E0%A4%A')).toBeNull();
+    expect(parseRoom(`?classroom=${ID}`)).toBeNull();
+    expect(parseRoom(`#chatroom%3D${ID}`)).toBeNull();
   });
 });
 

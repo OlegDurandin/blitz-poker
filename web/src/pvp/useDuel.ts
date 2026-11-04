@@ -152,6 +152,9 @@ export function useDuel(active: boolean) {
       if (name === guest.name()) return;
       guest.setName(name);
       restarting.current = true;
+      // The old socket is torn down without a state callback: say so here, so
+      // nothing is sent until the new one is online.
+      setState((s) => ({ ...s, conn: 'connecting' }));
       setProfileVersion((v) => v + 1);
     },
     peek: (id: string) => {

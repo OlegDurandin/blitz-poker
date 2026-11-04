@@ -99,7 +99,7 @@ export function parseRoom(text: string | null | undefined): string | null {
   let s = (text ?? '').trim();
   if (ROOM_ID.test(s)) return s;
   for (let i = 0; i < 3; i++) {
-    const m = /room=([A-Za-z0-9_-]{16,64})(?![A-Za-z0-9_-])/.exec(s);
+    const m = /(?:^|[#?&/\s])room=([A-Za-z0-9_-]{16,64})(?![A-Za-z0-9_-])/.exec(s);
     if (m) return m[1];
     try {
       const decoded = decodeURIComponent(s);
