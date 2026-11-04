@@ -59,6 +59,39 @@ struct AuthRequest {
     photo: Option<String>,
     /// Diagnostics only: client build and the URL fragment it was opened with.
     entry: Option<Entry>,
+    /// Outside VK: a random key the browser keeps, so a guest who reloads
+    /// gets the same seat back. Guests may only join rooms, never host.
+    guest_key: Option<String>,
+}
+
+/// Guest sign-ins allowed per minute, server-wide: guests cost nothing to
+/// make, so this bounds sessions an anonymous flood can create.
+const GUEST_AUTH_PER_MINUTE: u32 = 60;
+
+fn guest_auth_allowed(now: u64) -> bool {
+    static WINDOW: std::sync::Mutex<(u64, u32)> = std::sync::Mutex::new((0, 0));
+    let mut w = WINDOW.lock().unwrap_or_else(|e| e.into_inner());
+    if now.saturating_sub(w.0) >= 60_000 {
+        *w = (now, 0);
+    }
+    w.1 += 1;
+    w.1 <= GUEST_AUTH_PER_MINUTE
+}
+
+/// A stable guest id from the browser's key; None for a malformed key.
+fn guest_id(key: &str) -> Option<u64> {
+    use sha2::{Digest, Sha256};
+    let ok = (32..=128).contains(&key.len())
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    if !ok {
+        return None;
+    }
+    let digest = Sha256::digest(format!("blitz-guest:{key}"));
+    let mut bytes = [0u8; 8];
+    bytes[2..].copy_from_slice(&digest[..6]);
+    Some(crate::room::GUEST_BIT | u64::from_be_bytes(bytes))
 }
 
 #[derive(Deserialize, Default)]
@@ -131,6 +164,24 @@ async fn auth(State(hub): State<Arc<Hub>>, Json(req): Json<AuthRequest>) -> Resp
             }
         }
         (None, Some(id)) if cfg.dev_auth && id > 0 => id,
+        (None, None) if cfg.guest_auth && req.guest_key.is_some() => {
+            let Some(id) = req.guest_key.as_deref().and_then(guest_id) else {
+                hub.metrics.auth_failures.fetch_add(1, Ordering::Relaxed);
+                return reject(
+                    StatusCode::BAD_REQUEST,
+                    "bad_guest_key",
+                    "Не удалось войти как гость",
+                );
+            };
+            if !guest_auth_allowed(now_ms()) {
+                return reject(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "busy",
+                    "Слишком много входов, попробуйте через минуту",
+                );
+            }
+            id
+        }
         _ => {
             hub.metrics.auth_failures.fetch_add(1, Ordering::Relaxed);
             return reject(
@@ -140,15 +191,27 @@ async fn auth(State(hub): State<Arc<Hub>>, Json(req): Json<AuthRequest>) -> Resp
             );
         }
     };
+    let guest = crate::room::is_guest(vk_id);
+    let name = clean_name(req.name.as_deref().unwrap_or(""));
     let profile = Profile {
         vk_id,
-        name: clean_name(req.name.as_deref().unwrap_or("")),
-        photo: clean_photo(req.photo.as_deref()),
+        // The host should know who is not signed in through VK.
+        name: if guest {
+            format!("{name} (гость)")
+        } else {
+            name
+        },
+        photo: if guest {
+            None
+        } else {
+            clean_photo(req.photo.as_deref())
+        },
     };
     let entry = req.entry.unwrap_or_default();
     let params = req.launch_params.as_deref().unwrap_or("");
     tracing::info!(
         user = %user_tag(vk_id),
+        guest,
         build = %log_safe(entry.build.as_deref()),
         platform = %log_safe(Some(launch_param(params, "vk_platform"))),
         vk_ref = %log_safe(Some(launch_param(params, "vk_ref"))),
@@ -294,5 +357,17 @@ mod log_tests {
             "mobile_iphone"
         );
         assert_ne!(user_tag(1), user_tag(2));
+    }
+
+    #[test]
+    fn guest_ids_are_stable_and_never_vk_ids() {
+        let key = "k".repeat(43);
+        let id = guest_id(&key).unwrap();
+        assert_eq!(guest_id(&key), Some(id));
+        assert!(crate::room::is_guest(id));
+        assert!(!crate::room::is_guest(9_999_999_999));
+        assert_ne!(guest_id(&"j".repeat(43)), Some(id));
+        assert_eq!(guest_id("short"), None);
+        assert_eq!(guest_id(&format!("{}!", "k".repeat(40))), None);
     }
 }

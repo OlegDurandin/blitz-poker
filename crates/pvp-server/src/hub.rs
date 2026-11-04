@@ -314,6 +314,17 @@ impl Hub {
                 );
                 Ok(None)
             }
+            ClientMsg::CreateRoom { .. } if crate::room::is_guest(vk) => {
+                reply(
+                    &st,
+                    error(
+                        None,
+                        "guest_cannot_host",
+                        "Создать комнату можно только в игре внутри VK. Войдите по коду друга",
+                    ),
+                );
+                Ok(None)
+            }
             ClientMsg::CreateRoom { request_id } => {
                 if let Some(id) = st.create_requests.get(&(vk, request_id.clone())).cloned() {
                     reply(

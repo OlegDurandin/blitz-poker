@@ -2,7 +2,7 @@
 // with a one-time ticket, keeps it alive and reconnects with backoff. It only
 // sends intents; every state shown comes from the server's snapshots.
 
-import { BUILD, ENTRY_HASH, devUserId, launchParams } from './config';
+import { BUILD, ENTRY_HASH, devUserId, guest, inVk, launchParams } from './config';
 import type { ClientMsg, ServerMsg } from './types';
 
 export type ConnState = 'connecting' | 'online' | 'offline' | 'replaced' | 'failed';
@@ -71,7 +71,7 @@ export class DuelConnection {
   private async signIn(): Promise<string> {
     const dev = devUserId();
     const res = await this.post('/api/auth', {
-      ...(dev ? { dev_user_id: dev } : { launch_params: launchParams() }),
+      ...(dev ? { dev_user_id: dev } : inVk() ? { launch_params: launchParams() } : { guest_key: guest.key() }),
       name: this.profile.name,
       photo: this.profile.photo,
       // Diagnostics: how VK opened the app (does the invite fragment arrive?).

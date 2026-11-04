@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PlayerAction } from '../engine/types';
 import { track } from '../game/analytics';
 import { getUserInfo } from '../vk';
-import { PVP_URL, activeRoom, devUserId } from './config';
+import { PVP_URL, activeRoom, devUserId, guest } from './config';
 import { DuelConnection, type ConnState } from './connection';
 import type { RoomPreview, RoomView, ServerMsg } from './types';
 
@@ -42,6 +42,11 @@ export function useDuel(active: boolean) {
   /** Join automatically once online (invite link or "Присоединиться"). */
   const pendingJoin = useRef<string | null>(null);
   const pendingAction = useRef<string | null>(null);
+  /** A code to look up once (re)connected, e.g. after a guest renamed. */
+  const pendingFind = useRef<string | null>(null);
+  /** Bumped when a guest changes their name: reconnects with it. */
+  const [profileVersion, setProfileVersion] = useState(0);
+  const restarting = useRef(false);
 
   const onMessage = useCallback((msg: ServerMsg) => {
     switch (msg.type) {
@@ -85,12 +90,16 @@ export function useDuel(active: boolean) {
     void getUserInfo().then((user) => {
       if (stopped) return;
       const dev = devUserId();
-      const me = user ?? { name: dev ? `Игрок ${dev}` : 'Игрок', photo: null };
+      const me = user ?? { name: dev ? `Игрок ${dev}` : guest.name() || 'Игрок', photo: null };
       const c = new DuelConnection(PVP_URL!, me, {
         onMessage,
         onState: (s, error) => {
           setState((st) => ({ ...st, conn: s, connError: error ?? null }));
           if (s === 'online') {
+            if (pendingFind.current) {
+              c.send({ type: 'find_room', code: pendingFind.current });
+              pendingFind.current = null;
+            }
             if (pendingJoin.current) {
               c.send({ type: 'join_room', room_id: pendingJoin.current });
               pendingJoin.current = null;
@@ -101,6 +110,7 @@ export function useDuel(active: boolean) {
         },
       });
       conn.current = c;
+      restarting.current = false;
       c.start();
     });
     return () => {
@@ -108,7 +118,7 @@ export function useDuel(active: boolean) {
       conn.current?.stop();
       conn.current = null;
     };
-  }, [active, onMessage]);
+  }, [active, onMessage, profileVersion]);
 
   const send = (msg: Parameters<DuelConnection['send']>[0]) => {
     const ok = conn.current?.send(msg) ?? false;
@@ -135,7 +145,14 @@ export function useDuel(active: boolean) {
     /** A friend's room by its six-digit code: answers with a preview, like `peek`. */
     findByCode: (code: string) => {
       setState((s) => ({ ...s, preview: null, error: null }));
-      send({ type: 'find_room', code });
+      if (restarting.current || !conn.current?.send({ type: 'find_room', code })) pendingFind.current = code;
+    },
+    /** Outside VK: the name the host will see; reconnects if it changed. */
+    setGuestName: (name: string) => {
+      if (name === guest.name()) return;
+      guest.setName(name);
+      restarting.current = true;
+      setProfileVersion((v) => v + 1);
     },
     peek: (id: string) => {
       setState((s) => ({ ...s, preview: null, error: null }));

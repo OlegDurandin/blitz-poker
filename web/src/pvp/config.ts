@@ -14,6 +14,54 @@ export function launchParams(): string {
   return window.location.search.slice(1);
 }
 
+/** Opened inside VK (launch parameters carry VK's signature). */
+export function inVk(): boolean {
+  return new URLSearchParams(window.location.search).has('sign');
+}
+
+const GUEST_KEY = 'blitz.v1.guest_key';
+const GUEST_NAME = 'blitz.v1.guest_name';
+let memoryKey: string | null = null;
+
+/**
+ * Outside VK: a random key this browser keeps, so a guest who reloads gets
+ * the same seat back, and the name they typed. Guests only join by code.
+ */
+export const guest = {
+  key(): string {
+    try {
+      const saved = localStorage.getItem(GUEST_KEY);
+      if (saved && /^[A-Za-z0-9_-]{32,128}$/.test(saved)) return saved;
+    } catch {
+      // Private mode: fall back to a key for this page only.
+    }
+    if (!memoryKey) {
+      const b = crypto.getRandomValues(new Uint8Array(32));
+      memoryKey = btoa(String.fromCharCode(...b)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
+    try {
+      localStorage.setItem(GUEST_KEY, memoryKey);
+    } catch {
+      // Not persisted; fine for this visit.
+    }
+    return memoryKey;
+  },
+  name(): string {
+    try {
+      return localStorage.getItem(GUEST_NAME) ?? '';
+    } catch {
+      return '';
+    }
+  },
+  setName(name: string): void {
+    try {
+      localStorage.setItem(GUEST_NAME, name);
+    } catch {
+      // Private mode: the name lasts for this connection only.
+    }
+  },
+};
+
 /**
  * Local two-window testing without VK (server with PVP_DEV_AUTH=1):
  * open http://localhost:5173/?dev_user=1 and ?dev_user=2. Dev builds only.

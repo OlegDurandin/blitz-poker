@@ -80,9 +80,18 @@ impl Dealer for OsDealer {
 /// client (VKWebAppGetUserInfo) and are display-only; `vk_id` is verified.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Profile {
+    /// VK user id, or a guest id (`is_guest`).
     pub vk_id: u64,
     pub name: String,
     pub photo: Option<String>,
+}
+
+/// Guests (no VK sign-in) get ids with this bit set: far above any VK id.
+pub const GUEST_BIT: u64 = 1 << 62;
+
+/// A player who came in by room code without VK.
+pub fn is_guest(id: u64) -> bool {
+    id & GUEST_BIT != 0
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

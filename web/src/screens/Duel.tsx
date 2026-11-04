@@ -4,7 +4,7 @@ import { ChipIcon, HandshakeIcon, Trophy, CardsIcon } from '../components/icons'
 import { PlayingCard } from '../components/PlayingCard';
 import { describeHand, plural } from '../game/format';
 import { track } from '../game/analytics';
-import { formatCode, inviteLink, parseCode, parseRoom } from '../pvp/config';
+import { devUserId, formatCode, guest, inVk, inviteLink, parseCode, parseRoom } from '../pvp/config';
 import type { RoomView, SlotView } from '../pvp/types';
 import type { Duel as DuelController } from '../pvp/useDuel';
 import { copyText, shareLink } from '../vk';
@@ -155,6 +155,8 @@ export function Duel({ duel, inviteRoomId, onOpenInvite, enterCode = false, onEx
   }, [preview, room, onOpenInvite]);
 
   const [keepRoom, setKeepRoom] = useState(false);
+  const isGuest = !inVk() && devUserId() === null;
+  const [guestName, setGuestName] = useState(() => guest.name());
 
   const exit = () => {
     duel.leave();
@@ -200,12 +202,31 @@ export function Duel({ duel, inviteRoomId, onOpenInvite, enterCode = false, onEx
           Попросите друга нажать «Играть с другом» и продиктовать код комнаты из 6 цифр.
         </p>
         {offline && <div className="notice">Подключаемся к серверу…</div>}
+        {isGuest && (
+          <div className="duel-paste">
+            <label className="duel__hint" htmlFor="guest-name">
+              Вы не в VK: друг увидит это имя
+            </label>
+            <input
+              id="guest-name"
+              className="duel-paste__input"
+              value={guestName}
+              onChange={(e) => setGuestName(e.target.value.slice(0, 30))}
+              placeholder="Ваше имя"
+              autoComplete="nickname"
+            />
+          </div>
+        )}
         <PasteInvite
           ownRoom=""
           ownCode=""
           startOpen
-          onOpen={onOpenInvite}
+          onOpen={(id) => {
+            if (isGuest) duel.setGuestName(guestName.trim());
+            onOpenInvite(id);
+          }}
           onCode={(code) => {
+            if (isGuest) duel.setGuestName(guestName.trim());
             byCode.current = true;
             duel.findByCode(code);
           }}

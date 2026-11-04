@@ -8,7 +8,7 @@ import { track } from './game/analytics';
 import { botName } from './game/opponents';
 import { completedMatches, storage, type ArchiveLoad } from './game/storage';
 import { useGame } from './game/useGame';
-import { PVP_URL, activeRoom, clearRoomFromLocation, parseRoom, roomFromLocation } from './pvp/config';
+import { PVP_URL, activeRoom, clearRoomFromLocation, devUserId, inVk, parseRoom, roomFromLocation } from './pvp/config';
 import { useDuel } from './pvp/useDuel';
 import { Duel } from './screens/Duel';
 import { History } from './screens/History';
@@ -229,7 +229,8 @@ export function App() {
           onRules={() => setRulesOpen(true)}
           onStats={openStats}
           onDuel={
-            PVP_URL
+            // Hosting needs a VK sign-in; outside VK one can only join by code.
+            PVP_URL && (inVk() || devUserId() !== null)
               ? () => {
                   track('duel_opened', { source: 'home' });
                   setScreen({ name: 'duel', invite: null });

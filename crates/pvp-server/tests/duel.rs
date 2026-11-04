@@ -29,6 +29,7 @@ fn config(db: &str) -> Config {
         allowed_origins: vec![".vk-apps.ru".into()],
         launch_max_age_secs: 86_400,
         dev_auth: false,
+        guest_auth: true,
         timings: Timings {
             hand_pause_ms: 50,
             runout_pause_ms: 50,
@@ -132,6 +133,29 @@ impl Client {
             addr,
             "/api/auth",
             &json!({ "launch_params": launch(user), "name": name }),
+            None,
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        let ws = open_ws(addr, body["ticket"].as_str().unwrap(), ORIGIN)
+            .await
+            .unwrap();
+        let mut c = Client {
+            addr,
+            session: body["session"].as_str().unwrap().into(),
+            ws,
+            seen: vec![],
+        };
+        c.until(|m| m["type"] == "welcome").await;
+        c
+    }
+
+    /// Outside VK: signs in with a browser-kept guest key.
+    async fn login_guest(addr: SocketAddr, key: &str, name: &str) -> Client {
+        let (status, body) = post(
+            addr,
+            "/api/auth",
+            &json!({ "guest_key": key, "name": name }),
             None,
         )
         .await;
@@ -612,5 +636,57 @@ async fn friend_joins_by_room_code() {
         .await;
     let capped = third.until(|m| m["type"] == "server_error").await;
     assert_eq!(capped["code"], "too_many_attempts");
+    s.stop();
+}
+
+/// Without VK a player can join a friend's room by its code, but not host.
+#[tokio::test]
+async fn guest_joins_by_code_but_cannot_host() {
+    let s = start(":memory:").await;
+    let key = "g".repeat(43);
+    let mut guest = Client::login_guest(s.addr, &key, "Маша").await;
+    guest
+        .send(json!({ "type": "create_room", "request_id": "g1" }))
+        .await;
+    let denied = guest.until(|m| m["type"] == "server_error").await;
+    assert_eq!(denied["code"], "guest_cannot_host");
+
+    let mut host = Client::login(s.addr, 1001, "Олег").await;
+    host.send(json!({ "type": "create_room", "request_id": "r1" }))
+        .await;
+    let room_id = host.until(|m| m["type"] == "room_created").await["room_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let code = host.snapshot(|r| r["status"] == "waiting").await["code"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    guest
+        .send(json!({ "type": "find_room", "code": code }))
+        .await;
+    let preview = guest.until(|m| m["type"] == "room_preview").await;
+    assert_eq!(preview["preview"]["room_id"], room_id.as_str());
+    guest
+        .send(json!({ "type": "join_room", "room_id": room_id }))
+        .await;
+    guest.snapshot(|r| r["status"] == "ready").await;
+    let lobby = host.snapshot(|r| r["status"] == "ready").await;
+    assert_eq!(lobby["opponent"]["name"], "Маша (гость)");
+
+    // The same browser key later is the same player: the seat is still theirs.
+    let mut again = Client::login_guest(s.addr, &key, "Маша").await;
+    again
+        .send(json!({ "type": "peek_room", "room_id": room_id }))
+        .await;
+    let back = again.until(|m| m["type"] == "room_preview").await;
+    assert_eq!(back["preview"]["already_member"], true);
+
+    let (status, body) = post(s.addr, "/api/auth", &json!({ "guest_key": "short" }), None).await;
+    assert_eq!(
+        (status, body["error"]["code"].as_str()),
+        (400, Some("bad_guest_key"))
+    );
     s.stop();
 }
