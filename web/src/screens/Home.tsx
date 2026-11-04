@@ -3,6 +3,7 @@ import { Difficulty } from '../components/OpponentPicker';
 import type { Opponent } from '../engine/types';
 import { opponentInfo } from '../game/opponents';
 import { completedMatches, type Stats } from '../game/storage';
+import { BUILD } from '../pvp/config';
 
 interface Props {
   stats: Stats;
@@ -105,6 +106,7 @@ export function Home(p: Props) {
 
       <p className="home__legal">
         Только для развлечения: фишки виртуальные, не покупаются и не выводятся.
+        <span className="home__build"> · версия {BUILD}</span>
       </p>
     </main>
   );

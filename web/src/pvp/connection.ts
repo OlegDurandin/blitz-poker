@@ -2,7 +2,7 @@
 // with a one-time ticket, keeps it alive and reconnects with backoff. It only
 // sends intents; every state shown comes from the server's snapshots.
 
-import { devUserId, launchParams } from './config';
+import { BUILD, ENTRY_HASH, devUserId, launchParams } from './config';
 import type { ClientMsg, ServerMsg } from './types';
 
 export type ConnState = 'connecting' | 'online' | 'offline' | 'replaced' | 'failed';
@@ -74,6 +74,8 @@ export class DuelConnection {
       ...(dev ? { dev_user_id: dev } : { launch_params: launchParams() }),
       name: this.profile.name,
       photo: this.profile.photo,
+      // Diagnostics: how VK opened the app (does the invite fragment arrive?).
+      entry: { build: BUILD, hash: ENTRY_HASH.slice(0, 200), hash_now: window.location.hash.slice(0, 200) },
     });
     const body = await res.json().catch(() => null);
     if (!res.ok || !body?.ok) throw new AuthError(body?.error?.message ?? 'Не удалось войти');

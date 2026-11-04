@@ -57,6 +57,46 @@ struct AuthRequest {
     dev_user_id: Option<u64>,
     name: Option<String>,
     photo: Option<String>,
+    /// Diagnostics only: client build and the URL fragment it was opened with.
+    entry: Option<Entry>,
+}
+
+#[derive(Deserialize, Default)]
+struct Entry {
+    build: Option<String>,
+    hash: Option<String>,
+    hash_now: Option<String>,
+}
+
+/// A log-safe copy of client-supplied text: short, printable, and with long
+/// tokens (room ids) cut to their first four characters.
+fn log_safe(text: Option<&str>) -> String {
+    let text = text.unwrap_or("");
+    let mut out = String::new();
+    let mut run = 0;
+    for c in text.chars().take(120) {
+        if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+            run += 1;
+            if run <= 4 {
+                out.push(c);
+            } else if run == 5 {
+                out.push('…');
+            }
+        } else {
+            run = 0;
+            out.push(if c.is_ascii_graphic() { c } else { '?' });
+        }
+    }
+    out
+}
+
+/// One launch parameter, for logs (`vk_platform`, `vk_ref`): not secret.
+fn launch_param<'a>(params: &'a str, key: &str) -> &'a str {
+    params
+        .trim_start_matches('?')
+        .split('&')
+        .find_map(|kv| kv.strip_prefix(key)?.strip_prefix('='))
+        .unwrap_or("")
 }
 
 fn reject(status: StatusCode, code: &str, message: &str) -> Response {
@@ -105,6 +145,17 @@ async fn auth(State(hub): State<Arc<Hub>>, Json(req): Json<AuthRequest>) -> Resp
         name: clean_name(req.name.as_deref().unwrap_or("")),
         photo: clean_photo(req.photo.as_deref()),
     };
+    let entry = req.entry.unwrap_or_default();
+    let params = req.launch_params.as_deref().unwrap_or("");
+    tracing::info!(
+        user = %user_tag(vk_id),
+        build = %log_safe(entry.build.as_deref()),
+        platform = %log_safe(Some(launch_param(params, "vk_platform"))),
+        vk_ref = %log_safe(Some(launch_param(params, "vk_ref"))),
+        hash = %log_safe(entry.hash.as_deref()),
+        hash_now = %log_safe(entry.hash_now.as_deref()),
+        "signed in"
+    );
     let (session, ticket) = hub.issue_session(profile.clone());
     Json(serde_json::json!({
         "ok": true,
@@ -214,4 +265,34 @@ async fn session(hub: Arc<Hub>, profile: Profile, socket: WebSocket) {
     }
     hub.disconnect(conn_id);
     writer.abort();
+}
+
+/// Tells users apart in logs without logging VK ids.
+fn user_tag(vk_id: u64) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(format!("blitz-log:{vk_id}"));
+    digest[..3].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[cfg(test)]
+mod log_tests {
+    use super::*;
+
+    #[test]
+    fn log_safe_cuts_room_ids() {
+        assert_eq!(
+            log_safe(Some("#room=O6ceAbCdEfGhIjKlMn0_-q")),
+            "#room=O6ce…"
+        );
+        assert_eq!(log_safe(Some("#room%3DO6ceAbCdEfGh")), "#room%3DO6…");
+        assert_eq!(log_safe(None), "");
+        assert_eq!(
+            launch_param(
+                "vk_app_id=1&vk_platform=mobile_iphone&sign=x",
+                "vk_platform"
+            ),
+            "mobile_iphone"
+        );
+        assert_ne!(user_tag(1), user_tag(2));
+    }
 }
