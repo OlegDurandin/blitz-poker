@@ -4,7 +4,7 @@
 // opponent), never who won.
 
 import type { Card, Category, Seat, ShownHand } from '../engine/types';
-import { CATEGORY_NAME, describeHand, kickerNote } from './format';
+import { CATEGORY_NAME, decidingCardNote, describeHand, kickerNote } from './format';
 
 /** Whose best five cards are marked. */
 export type Focus = 'both' | 'mine' | 'theirs';
@@ -67,5 +67,5 @@ export function showdownReason(showdown: [ShownHand, ShownHand], winner: Seat | 
   if (w.category !== l.category && CATEGORY_ORDER.indexOf(w.category) > CATEGORY_ORDER.indexOf(l.category)) {
     return `${CATEGORY_NAME[w.category]} сильнее ${CATEGORY_GEN[l.category]}`;
   }
-  return kickerNote(w, l) ?? `Старше: ${describeHand(w)}`;
+  return kickerNote(w, l) ?? decidingCardNote(w, l) ?? `Старше: ${describeHand(w)}`;
 }

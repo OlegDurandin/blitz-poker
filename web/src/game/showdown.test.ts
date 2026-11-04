@@ -25,6 +25,16 @@ describe('showdown reason', () => {
     expect(showdownReason([kings, aces], 'bot')).toBe('Старше: пара тузов');
   });
 
+  it('names the deciding card for a high card or a flush', () => {
+    // Board 5d 8d Kh 3h Tc: J2 plays K-J-T-8-5, AQ plays A-K-Q-T-8.
+    const mine = hand('high_card', 'Kh Jc Tc 8d 5d', 'Jc 2c');
+    const theirs = hand('high_card', 'Ac Kh Qh Tc 8d', 'Ac Qh');
+    expect(showdownReason([mine, theirs], 'bot')).toBe('Туз старше короля');
+    const f1 = hand('flush', 'Ah Kh Qh 7h 2h');
+    const f2 = hand('flush', 'Ah Kh Jh 9h 8h');
+    expect(showdownReason([f1, f2], 'human')).toBe('Решила третья карта: дама против валета');
+  });
+
   it('explains ties, including when the board plays', () => {
     const board = 'Ah Kh Qh Jh Th';
     expect(showdownReason([hand('royal_flush', board), hand('royal_flush', board)], null)).toBe(
