@@ -690,3 +690,42 @@ async fn guest_joins_by_code_but_cannot_host() {
     );
     s.stop();
 }
+
+/// A fresh guest identity does not reset the wrong-code count: misses are
+/// also counted per network. Guest sign-ins are capped per network too.
+#[tokio::test]
+async fn new_guest_keys_do_not_reset_limits() {
+    let s = start(":memory:").await;
+    let mut first = Client::login_guest(s.addr, &"a".repeat(43), "А").await;
+    for _ in 0..20 {
+        first
+            .send(json!({ "type": "find_room", "code": "000000" }))
+            .await;
+        first.until(|m| m["type"] == "server_error").await;
+    }
+    let mut second = Client::login_guest(s.addr, &"b".repeat(43), "Б").await;
+    second
+        .send(json!({ "type": "find_room", "code": "000000" }))
+        .await;
+    let capped = second.until(|m| m["type"] == "server_error").await;
+    assert_eq!(capped["code"], "too_many_attempts");
+
+    // Two guests signed in above; eight more fit, the next one does not.
+    for i in 0..8 {
+        let key = format!("{i}").repeat(43);
+        let (status, _) = post(s.addr, "/api/auth", &json!({ "guest_key": key }), None).await;
+        assert_eq!(status, 200);
+    }
+    let (status, body) = post(
+        s.addr,
+        "/api/auth",
+        &json!({ "guest_key": "z".repeat(43) }),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (status, body["error"]["code"].as_str()),
+        (429, Some("busy"))
+    );
+    s.stop();
+}

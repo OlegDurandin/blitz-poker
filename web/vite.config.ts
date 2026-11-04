@@ -5,8 +5,8 @@ import { execSync } from 'node:child_process';
 /** Short commit of this build, shown on the home screen and sent at sign-in. */
 function build(): string {
   try {
-    const sha = execSync('git rev-parse --short HEAD').toString().trim();
-    const dirty = execSync('git status --porcelain -- src').toString().trim() !== '';
+    const sha = execSync('git rev-parse --short HEAD', { cwd: import.meta.dirname }).toString().trim();
+    const dirty = execSync('git status --porcelain -- src', { cwd: import.meta.dirname }).toString().trim() !== '';
     return dirty ? `${sha}+` : sha;
   } catch {
     return 'dev';

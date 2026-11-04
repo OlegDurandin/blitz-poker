@@ -1,0 +1,36 @@
+# Клиент (VK Mini App): движок в WASM, проверка типов, тесты, сборка.
+# Выкладка в VK — вручную (npm run deploy), CI только проверяет.
+name: web
+
+on:
+  push:
+    branches: [main, "feature/**"]
+    paths: ["web/**", "crates/poker-core/**", "crates/poker-wasm/**", "crates/bot/**", ".github/workflows/web.yml"]
+  workflow_dispatch:
+
+concurrency:
+  group: web-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      # build: WASM движка → tsc → vite. Тесты используют тот же WASM.
+      - run: npm run build
+      - run: npx vitest run

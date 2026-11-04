@@ -16,7 +16,7 @@ pub struct Config {
     /// Accept `{"dev_user_id": …}` instead of VK parameters. Only honoured
     /// when bound to a loopback address.
     pub dev_auth: bool,
-    /// Players outside VK may join a room by its code (`PVP_GUEST_AUTH=0` turns it off).
+    /// Players outside VK may join a room by its code (`PVP_GUEST_AUTH=1`).
     pub guest_auth: bool,
     pub timings: Timings,
 }
@@ -55,7 +55,7 @@ impl Config {
                 .collect(),
             launch_max_age_secs: num("PVP_LAUNCH_MAX_AGE_HOURS", 24)? * 3600,
             dev_auth,
-            guest_auth: var("PVP_GUEST_AUTH").is_none_or(|v| v.trim() != "0"),
+            guest_auth: var("PVP_GUEST_AUTH").is_some_and(|v| v.trim() == "1"),
             timings: Timings {
                 turn_ms: num("PVP_TURN_SECONDS", defaults.turn_ms / 1000)? * 1000,
                 bank_ms: num("PVP_BANK_SECONDS", defaults.bank_ms / 1000)? * 1000,

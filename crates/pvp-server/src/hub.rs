@@ -33,10 +33,42 @@ const MAX_HOSTED_ROOMS: usize = 3;
 const CLOSED_IN_MEMORY_MS: u64 = 3_600_000;
 /// Closed rooms stay in the database this long.
 const CLOSED_IN_DB_MS: u64 = 24 * 3_600_000;
-/// Wrong room codes one user may try per window: a million codes are not
-/// guessable at this rate.
+/// Wrong room codes per window, counted per user *and* per network (IPv4
+/// address or IPv6 /64), so new guest identities do not reset the count.
 const CODE_MISSES_MAX: u32 = 20;
 const CODE_MISSES_WINDOW_MS: u64 = 10 * 60_000;
+/// Guest sign-ins per network per window, and server-wide per minute as a
+/// backstop on anonymous sessions.
+const GUEST_AUTH_PER_CLIENT: u32 = 10;
+const GUEST_AUTH_WINDOW_MS: u64 = 10 * 60_000;
+const GUEST_AUTH_GLOBAL_PER_MINUTE: u32 = 300;
+
+/// Fixed-window counters keyed by user or network.
+#[derive(Default)]
+struct Windows(HashMap<String, (u64, u32)>);
+
+impl Windows {
+    fn count(&self, key: &str, now: u64, window: u64) -> u32 {
+        match self.0.get(key) {
+            Some(&(start, n)) if now.saturating_sub(start) <= window => n,
+            _ => 0,
+        }
+    }
+
+    fn add(&mut self, key: &str, now: u64, window: u64) -> u32 {
+        let e = self.0.entry(key.to_string()).or_insert((now, 0));
+        if now.saturating_sub(e.0) > window {
+            *e = (now, 0);
+        }
+        e.1 += 1;
+        e.1
+    }
+
+    fn prune(&mut self, now: u64, window: u64) {
+        self.0
+            .retain(|_, (start, _)| now.saturating_sub(*start) <= window);
+    }
+}
 
 /// What the socket task should do.
 #[derive(Debug)]
@@ -48,6 +80,8 @@ pub enum Outgoing {
 
 struct Conn {
     profile: Profile,
+    /// Network key for rate limits (IPv4 address or IPv6 /64).
+    client: String,
     tx: mpsc::UnboundedSender<Outgoing>,
 }
 
@@ -75,8 +109,10 @@ struct State {
     by_user: HashMap<u64, u64>,
     /// (user, request_id) → room id, for idempotent `create_room`.
     create_requests: HashMap<(u64, String), String>,
-    /// Wrong room codes per user: (window start, misses).
-    code_misses: HashMap<u64, (u64, u32)>,
+    /// Wrong room codes per user (`u:<id>`) and per network (`n:<net>`).
+    code_misses: Windows,
+    /// Guest sign-ins per network, and the server-wide minute (`*`).
+    guest_auths: Windows,
     sessions: Sessions,
     store: Store,
     next_conn: u64,
@@ -122,7 +158,8 @@ impl Hub {
                 conns: HashMap::new(),
                 by_user: HashMap::new(),
                 create_requests,
-                code_misses: HashMap::new(),
+                code_misses: Windows::default(),
+                guest_auths: Windows::default(),
                 sessions: Sessions::default(),
                 store,
                 next_conn: 1,
@@ -158,6 +195,18 @@ impl Hub {
         self.lock().sessions.issue(profile, now_ms())
     }
 
+    /// Counts a guest sign-in from `client` (a network key); false when that
+    /// network, or the server as a whole, is over its limit.
+    pub fn guest_auth_allowed(&self, client: &str) -> bool {
+        let now = now_ms();
+        let mut st = self.lock();
+        let global = st.guest_auths.add("*", now, 60_000);
+        let mine = st
+            .guest_auths
+            .add(&format!("n:{client}"), now, GUEST_AUTH_WINDOW_MS);
+        global <= GUEST_AUTH_GLOBAL_PER_MINUTE && mine <= GUEST_AUTH_PER_CLIENT
+    }
+
     pub fn ticket_for(&self, session: &str) -> Option<String> {
         self.lock().sessions.ticket_for(session, now_ms())
     }
@@ -170,7 +219,12 @@ impl Hub {
 
     /// A verified user opened a socket. An older socket of the same user is
     /// told it was replaced and closed: one account, one live connection.
-    pub fn connect(&self, profile: Profile) -> (u64, mpsc::UnboundedReceiver<Outgoing>) {
+    /// `client`: the player's network (`server::client_key`), for rate limits.
+    pub fn connect(
+        &self,
+        profile: Profile,
+        client: String,
+    ) -> (u64, mpsc::UnboundedReceiver<Outgoing>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let now = now_ms();
         let mut st = self.lock();
@@ -194,6 +248,7 @@ impl Hub {
         }
         let conn = Conn {
             profile: profile.clone(),
+            client,
             tx,
         };
         self.send(
@@ -266,7 +321,11 @@ impl Hub {
     pub fn handle(&self, conn_id: u64, text: &str) {
         let now = now_ms();
         let mut st = self.lock();
-        let Some(profile) = st.conns.get(&conn_id).map(|c| c.profile.clone()) else {
+        let Some((profile, client)) = st
+            .conns
+            .get(&conn_id)
+            .map(|c| (c.profile.clone(), c.client.clone()))
+        else {
             return;
         };
         let reply = |st: &State, msg: ServerMsg| {
@@ -412,13 +471,11 @@ impl Hub {
                 }
             }
             ClientMsg::FindRoom { code } => {
-                let (start, misses) = st.code_misses.get(&vk).copied().unwrap_or((now, 0));
-                let (start, misses) = if now.saturating_sub(start) > CODE_MISSES_WINDOW_MS {
-                    (now, 0)
-                } else {
-                    (start, misses)
-                };
-                if misses >= CODE_MISSES_MAX {
+                let keys = [format!("u:{vk}"), format!("n:{client}")];
+                if keys
+                    .iter()
+                    .any(|k| st.code_misses.count(k, now, CODE_MISSES_WINDOW_MS) >= CODE_MISSES_MAX)
+                {
                     reply(
                         &st,
                         error(
@@ -445,8 +502,12 @@ impl Hub {
                         reply(&st, ServerMsg::RoomPreview { preview });
                     }
                     None => {
-                        st.code_misses.insert(vk, (start, misses + 1));
-                        tracing::info!(misses = misses + 1, "code: not found");
+                        let misses = keys
+                            .iter()
+                            .map(|k| st.code_misses.add(k, now, CODE_MISSES_WINDOW_MS))
+                            .max()
+                            .unwrap_or(0);
+                        tracing::info!(misses, "code: not found");
                         reply(
                             &st,
                             error(
@@ -714,8 +775,8 @@ impl Hub {
             .retain(|_, r| r.is_open() || now.saturating_sub(r.activity_ms) < CLOSED_IN_MEMORY_MS);
         let live: std::collections::HashSet<String> = st.rooms.keys().cloned().collect();
         st.create_requests.retain(|_, id| live.contains(id));
-        st.code_misses
-            .retain(|_, (start, _)| now.saturating_sub(*start) <= CODE_MISSES_WINDOW_MS);
+        st.code_misses.prune(now, CODE_MISSES_WINDOW_MS);
+        st.guest_auths.prune(now, GUEST_AUTH_WINDOW_MS);
         st.sessions.prune(now);
     }
 

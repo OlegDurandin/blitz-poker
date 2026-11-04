@@ -64,18 +64,23 @@ struct AuthRequest {
     guest_key: Option<String>,
 }
 
-/// Guest sign-ins allowed per minute, server-wide: guests cost nothing to
-/// make, so this bounds sessions an anonymous flood can create.
-const GUEST_AUTH_PER_MINUTE: u32 = 60;
-
-fn guest_auth_allowed(now: u64) -> bool {
-    static WINDOW: std::sync::Mutex<(u64, u32)> = std::sync::Mutex::new((0, 0));
-    let mut w = WINDOW.lock().unwrap_or_else(|e| e.into_inner());
-    if now.saturating_sub(w.0) >= 60_000 {
-        *w = (now, 0);
+/// The player's network for rate limits: the address Caddy put last in
+/// X-Forwarded-For (it overwrites what untrusted clients send), with IPv6
+/// cut to its /64 so one home network counts once. Direct hits share "direct".
+pub fn client_key(headers: &HeaderMap) -> String {
+    let ip = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.rsplit(',').next())
+        .and_then(|v| v.trim().parse::<std::net::IpAddr>().ok());
+    match ip {
+        Some(std::net::IpAddr::V4(v4)) => v4.to_string(),
+        Some(std::net::IpAddr::V6(v6)) => {
+            let s = v6.segments();
+            format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
+        }
+        None => "direct".into(),
     }
-    w.1 += 1;
-    w.1 <= GUEST_AUTH_PER_MINUTE
 }
 
 /// A stable guest id from the browser's key; None for a malformed key.
@@ -140,7 +145,11 @@ fn reject(status: StatusCode, code: &str, message: &str) -> Response {
         .into_response()
 }
 
-async fn auth(State(hub): State<Arc<Hub>>, Json(req): Json<AuthRequest>) -> Response {
+async fn auth(
+    State(hub): State<Arc<Hub>>,
+    headers: HeaderMap,
+    Json(req): Json<AuthRequest>,
+) -> Response {
     let cfg = &hub.config;
     let vk_id = match (&req.launch_params, req.dev_user_id) {
         (Some(params), _) => {
@@ -173,7 +182,7 @@ async fn auth(State(hub): State<Arc<Hub>>, Json(req): Json<AuthRequest>) -> Resp
                     "Не удалось войти как гость",
                 );
             };
-            if !guest_auth_allowed(now_ms()) {
+            if !hub.guest_auth_allowed(&client_key(&headers)) {
                 return reject(
                     StatusCode::TOO_MANY_REQUESTS,
                     "busy",
@@ -283,11 +292,11 @@ async fn ws(
     upgrade
         .max_message_size(MAX_FRAME)
         .max_frame_size(MAX_FRAME)
-        .on_upgrade(move |socket| session(hub, profile, socket))
+        .on_upgrade(move |socket| session(hub, profile, client_key(&headers), socket))
 }
 
-async fn session(hub: Arc<Hub>, profile: Profile, socket: WebSocket) {
-    let (conn_id, mut outgoing) = hub.connect(profile);
+async fn session(hub: Arc<Hub>, profile: Profile, client: String, socket: WebSocket) {
+    let (conn_id, mut outgoing) = hub.connect(profile, client);
     let (mut sink, mut stream) = socket.split();
 
     let writer = tokio::spawn(async move {
@@ -357,6 +366,18 @@ mod log_tests {
             "mobile_iphone"
         );
         assert_ne!(user_tag(1), user_tag(2));
+    }
+
+    #[test]
+    fn client_key_uses_the_proxy_address() {
+        let mut h = HeaderMap::new();
+        assert_eq!(client_key(&h), "direct");
+        h.insert("x-forwarded-for", "1.2.3.4, 5.6.7.8".parse().unwrap());
+        assert_eq!(client_key(&h), "5.6.7.8");
+        h.insert("x-forwarded-for", "2a00:1450:4010:c05::8a".parse().unwrap());
+        assert_eq!(client_key(&h), "2a00:1450:4010:c05::/64");
+        h.insert("x-forwarded-for", "garbage".parse().unwrap());
+        assert_eq!(client_key(&h), "direct");
     }
 
     #[test]
