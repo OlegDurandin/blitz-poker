@@ -318,16 +318,40 @@ impl Hub {
                     );
                     Ok(Some(id))
                 } else {
-                    // A new invite supersedes this host's empty rooms.
-                    let stale: Vec<String> = st
+                    // "Играть с другом" again brings the host back to their open room
+                    // (a friend may already be waiting in it), so a link already sent
+                    // stays valid. Older empty rooms are closed.
+                    let mut open: Vec<(bool, u64, String)> = st
                         .rooms
                         .values()
-                        .filter(|r| r.host.profile.vk_id == vk && r.status == Status::Waiting)
-                        .map(|r| r.id.clone())
+                        .filter(|r| {
+                            r.host.profile.vk_id == vk
+                                && matches!(r.status, Status::Waiting | Status::Ready)
+                        })
+                        .map(|r| (r.status == Status::Ready, r.created_ms, r.id.clone()))
                         .collect();
-                    for id in stale {
+                    open.sort();
+                    let reuse = open.pop().map(|(_, _, id)| id);
+                    let waiting = open.into_iter().filter(|(ready, _, _)| !ready);
+                    for (_, _, id) in waiting {
                         let _ = st.rooms.get_mut(&id).expect("room").leave(vk, now);
                         self.commit(&mut st, &id, now);
+                    }
+                    if let Some(id) = reuse {
+                        let room = st.rooms.get_mut(&id).expect("room");
+                        room.activity_ms = now;
+                        room.set_connected(vk, true, &timings, now);
+                        st.create_requests
+                            .insert((vk, request_id.clone()), id.clone());
+                        tracing::info!(room = %ids::log_tag(&id), "room reused");
+                        reply(
+                            &st,
+                            ServerMsg::RoomCreated {
+                                room_id: id.clone(),
+                                request_id,
+                            },
+                        );
+                        return self.commit(&mut st, &id, now);
                     }
                     let hosted = st
                         .rooms
@@ -360,10 +384,19 @@ impl Hub {
             ClientMsg::PeekRoom { room_id } => match self.find(&mut st, &room_id) {
                 Some(room) => {
                     let preview = room.preview(vk);
+                    tracing::info!(
+                        room = %ids::log_tag(&room_id),
+                        status = ?room.status,
+                        own = preview.already_member,
+                        "peek"
+                    );
                     reply(&st, ServerMsg::RoomPreview { preview });
                     Ok(None)
                 }
-                None => Err((Some(room_id), RoomError::NotFound)),
+                None => {
+                    tracing::info!(room = %ids::log_tag(&room_id), "peek: not found");
+                    Err((Some(room_id), RoomError::NotFound))
+                }
             },
             ClientMsg::JoinRoom { room_id } => self.with_room(&mut st, &room_id, |room, st| {
                 let was_waiting = room.status == Status::Waiting;

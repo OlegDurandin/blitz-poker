@@ -515,10 +515,10 @@ async fn match_survives_a_server_restart() {
     }
 }
 
-/// A host who opens a new invite closes their previous empty room, so stale
-/// rooms never block new ones.
+/// "Играть с другом" again returns the host's open room, so a link already
+/// sent keeps working and a friend who joined meanwhile is found there.
 #[tokio::test]
-async fn new_invite_replaces_an_empty_one() {
+async fn new_invite_reuses_the_open_room() {
     let s = start(":memory:").await;
     let mut host = Client::login(s.addr, 1001, "Олег").await;
     let mut ids = vec![];
@@ -532,21 +532,27 @@ async fn new_invite_replaces_an_empty_one() {
                 .to_string(),
         );
     }
+    assert!(ids.iter().all(|id| id == &ids[0]), "{ids:?}");
+    host.snapshot(|r| r["status"] == "waiting").await;
+
     let mut guest = Client::login(s.addr, 2002, "Максим").await;
     guest
         .send(json!({ "type": "peek_room", "room_id": ids[0] }))
         .await;
-    let old = guest.until(|m| m["type"] == "room_preview").await;
-    assert_eq!(
-        (
-            old["preview"]["joinable"].as_bool(),
-            old["preview"]["status"].as_str()
-        ),
-        (Some(false), Some("closed"))
-    );
+    let preview = guest.until(|m| m["type"] == "room_preview").await;
+    assert_eq!(preview["preview"]["joinable"].as_bool(), Some(true));
     guest
-        .send(json!({ "type": "join_room", "room_id": ids[4] }))
+        .send(json!({ "type": "join_room", "room_id": ids[0] }))
         .await;
     guest.snapshot(|r| r["status"] == "ready").await;
+
+    host.send(json!({ "type": "create_room", "request_id": "r9" }))
+        .await;
+    let fresh = host.until(|m| m["type"] == "room_created").await["room_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(fresh, ids[0]);
+    host.snapshot(|r| r["status"] == "ready").await;
     s.stop();
 }

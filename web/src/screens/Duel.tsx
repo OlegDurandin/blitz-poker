@@ -113,11 +113,16 @@ export function Duel({ duel, inviteRoomId, onOpenInvite, onExit, onRules }: Prop
     else duel.createRoom();
   }, [state.conn, room, inviteRoomId, duel]);
 
-  // The host's own link, or a reload: take the seat back without asking.
+  // The host's own link, or a reload: take the seat back without asking, once.
+  // A room of one's own that has closed since is just left behind.
   const preview = state.preview;
+  const rejoined = useRef<string | null>(null);
   useEffect(() => {
-    if (preview?.already_member && !room) duel.join(preview.room_id);
-  }, [preview, room, duel]);
+    if (!preview?.already_member || room || rejoined.current === preview.room_id) return;
+    rejoined.current = preview.room_id;
+    if (preview.status === 'closed') onExit();
+    else duel.join(preview.room_id);
+  }, [preview, room, duel, onExit]);
 
   const exit = () => {
     duel.leave();
@@ -323,9 +328,15 @@ export function Duel({ duel, inviteRoomId, onOpenInvite, onExit, onRules }: Prop
       <header className="screen-header">
         <button
           className="btn btn--ghost btn--small"
-          onClick={() => (room.you_are_host && opponent ? setConfirm('cancel') : exit())}
+          onClick={() => {
+            // Nobody has joined yet: keep the room so the link already sent
+            // still works; "Играть с другом" brings the host back to it.
+            if (room.you_are_host && !opponent) onExit();
+            else if (room.you_are_host) setConfirm('cancel');
+            else exit();
+          }}
         >
-          ← {room.you_are_host ? 'Отменить' : 'Выйти'}
+          ← {room.you_are_host && opponent ? 'Отменить' : room.you_are_host ? 'Назад' : 'Выйти'}
         </button>
         <h1 className="screen-header__title">Дуэль с другом</h1>
       </header>
@@ -342,7 +353,10 @@ export function Duel({ duel, inviteRoomId, onOpenInvite, onExit, onRules }: Prop
 
       {room.status === 'waiting' && room.you_are_host && (
         <section className="duel__invite">
-          <p className="duel__text">Отправьте другу ссылку: он откроет игру прямо в этой комнате.</p>
+          <p className="duel__text">
+            Отправьте другу ссылку в VK: он откроет игру прямо в этой комнате. Комната ждёт 15 минут,
+            «Играть с другом» на главной вернёт вас сюда.
+          </p>
           <button
             className="btn btn--primary btn--hero"
             disabled={offline}
