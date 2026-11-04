@@ -556,3 +556,61 @@ async fn new_invite_reuses_the_open_room() {
     host.snapshot(|r| r["status"] == "ready").await;
     s.stop();
 }
+
+#[tokio::test]
+async fn friend_joins_by_room_code() {
+    let s = start(":memory:").await;
+    let mut host = Client::login(s.addr, 1001, "Олег").await;
+    host.send(json!({ "type": "create_room", "request_id": "r1" }))
+        .await;
+    let created = host.until(|m| m["type"] == "room_created").await;
+    assert_eq!(created["reused"], false);
+    let room_id = created["room_id"].as_str().unwrap().to_string();
+    let lobby = host.snapshot(|r| r["status"] == "waiting").await;
+    let code = lobby["code"].as_str().unwrap().to_string();
+    assert_eq!(code.len(), 6);
+
+    // "Играть с другом" again: the same room, flagged as still open.
+    host.send(json!({ "type": "create_room", "request_id": "r2" }))
+        .await;
+    let again = host.until(|m| m["type"] == "room_created").await;
+    assert_eq!(again["room_id"], room_id.as_str());
+    assert_eq!(again["reused"], true);
+
+    let mut guest = Client::login(s.addr, 2002, "Максим").await;
+    let spaced = format!("{} {}", &code[..3], &code[3..]);
+    guest
+        .send(json!({ "type": "find_room", "code": spaced }))
+        .await;
+    let preview = guest.until(|m| m["type"] == "room_preview").await;
+    assert_eq!(preview["preview"]["room_id"], room_id.as_str());
+    assert_eq!(preview["preview"]["host_name"], "Олег");
+    assert_eq!(preview["preview"]["joinable"], true);
+    guest
+        .send(json!({ "type": "join_room", "room_id": room_id }))
+        .await;
+    guest.snapshot(|r| r["status"] == "ready").await;
+
+    // A seated room is no longer found by its code.
+    let mut third = Client::login(s.addr, 3003, "Аня").await;
+    third
+        .send(json!({ "type": "find_room", "code": code }))
+        .await;
+    let miss = third.until(|m| m["type"] == "server_error").await;
+    assert_eq!(miss["code"], "code_not_found");
+
+    // Guessing is capped per user.
+    let wrong = if code == "000000" { "000001" } else { "000000" };
+    for _ in 0..19 {
+        third
+            .send(json!({ "type": "find_room", "code": wrong }))
+            .await;
+        third.until(|m| m["type"] == "server_error").await;
+    }
+    third
+        .send(json!({ "type": "find_room", "code": wrong }))
+        .await;
+    let capped = third.until(|m| m["type"] == "server_error").await;
+    assert_eq!(capped["code"], "too_many_attempts");
+    s.stop();
+}

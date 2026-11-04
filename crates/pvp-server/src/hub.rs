@@ -33,6 +33,10 @@ const MAX_HOSTED_ROOMS: usize = 3;
 const CLOSED_IN_MEMORY_MS: u64 = 3_600_000;
 /// Closed rooms stay in the database this long.
 const CLOSED_IN_DB_MS: u64 = 24 * 3_600_000;
+/// Wrong room codes one user may try per window: a million codes are not
+/// guessable at this rate.
+const CODE_MISSES_MAX: u32 = 20;
+const CODE_MISSES_WINDOW_MS: u64 = 10 * 60_000;
 
 /// What the socket task should do.
 #[derive(Debug)]
@@ -71,6 +75,8 @@ struct State {
     by_user: HashMap<u64, u64>,
     /// (user, request_id) → room id, for idempotent `create_room`.
     create_requests: HashMap<(u64, String), String>,
+    /// Wrong room codes per user: (window start, misses).
+    code_misses: HashMap<u64, (u64, u32)>,
     sessions: Sessions,
     store: Store,
     next_conn: u64,
@@ -116,6 +122,7 @@ impl Hub {
                 conns: HashMap::new(),
                 by_user: HashMap::new(),
                 create_requests,
+                code_misses: HashMap::new(),
                 sessions: Sessions::default(),
                 store,
                 next_conn: 1,
@@ -314,6 +321,7 @@ impl Hub {
                         ServerMsg::RoomCreated {
                             room_id: id.clone(),
                             request_id,
+                            reused: false,
                         },
                     );
                     Ok(Some(id))
@@ -349,6 +357,7 @@ impl Hub {
                             ServerMsg::RoomCreated {
                                 room_id: id.clone(),
                                 request_id,
+                                reused: true,
                             },
                         );
                         return self.commit(&mut st, &id, now);
@@ -361,7 +370,16 @@ impl Hub {
                     if hosted >= MAX_HOSTED_ROOMS {
                         Err((None, RoomError::TooManyRooms))
                     } else {
-                        let id = ids::room_id();
+                        // Codes of open rooms must not clash: a friend would land elsewhere.
+                        let taken: std::collections::HashSet<String> = st
+                            .rooms
+                            .values()
+                            .filter(|r| r.is_open())
+                            .map(|r| ids::room_code(&r.id))
+                            .collect();
+                        let id = std::iter::repeat_with(ids::room_id)
+                            .find(|id| !taken.contains(&ids::room_code(id)))
+                            .expect("an unused code");
                         st.rooms.insert(
                             id.clone(),
                             Room::new(id.clone(), profile.clone(), request_id.clone(), now),
@@ -375,11 +393,60 @@ impl Hub {
                             ServerMsg::RoomCreated {
                                 room_id: id.clone(),
                                 request_id,
+                                reused: false,
                             },
                         );
                         Ok(Some(id))
                     }
                 }
+            }
+            ClientMsg::FindRoom { code } => {
+                let (start, misses) = st.code_misses.get(&vk).copied().unwrap_or((now, 0));
+                let (start, misses) = if now.saturating_sub(start) > CODE_MISSES_WINDOW_MS {
+                    (now, 0)
+                } else {
+                    (start, misses)
+                };
+                if misses >= CODE_MISSES_MAX {
+                    reply(
+                        &st,
+                        error(
+                            None,
+                            "too_many_attempts",
+                            "Слишком много неверных кодов. Попробуйте через 10 минут или попросите ссылку",
+                        ),
+                    );
+                    return;
+                }
+                let found = ids::parse_code(&code).and_then(|code| {
+                    st.rooms
+                        .values()
+                        .find(|r| r.status == Status::Waiting && ids::room_code(&r.id) == code)
+                });
+                match found {
+                    Some(room) => {
+                        let preview = room.preview(vk);
+                        tracing::info!(
+                            room = %ids::log_tag(&room.id),
+                            own = preview.already_member,
+                            "found by code"
+                        );
+                        reply(&st, ServerMsg::RoomPreview { preview });
+                    }
+                    None => {
+                        st.code_misses.insert(vk, (start, misses + 1));
+                        tracing::info!(misses = misses + 1, "code: not found");
+                        reply(
+                            &st,
+                            error(
+                                None,
+                                "code_not_found",
+                                "Комнаты с таким кодом нет. Проверьте цифры — или комната уже закрыта",
+                            ),
+                        );
+                    }
+                }
+                Ok(None)
             }
             ClientMsg::PeekRoom { room_id } => match self.find(&mut st, &room_id) {
                 Some(room) => {
@@ -636,6 +703,8 @@ impl Hub {
             .retain(|_, r| r.is_open() || now.saturating_sub(r.activity_ms) < CLOSED_IN_MEMORY_MS);
         let live: std::collections::HashSet<String> = st.rooms.keys().cloned().collect();
         st.create_requests.retain(|_, id| live.contains(id));
+        st.code_misses
+            .retain(|_, (start, _)| now.saturating_sub(*start) <= CODE_MISSES_WINDOW_MS);
         st.sessions.prune(now);
     }
 

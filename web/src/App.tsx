@@ -28,7 +28,7 @@ type Screen =
   | { name: 'result' }
   | { name: 'stats' }
   /** `invite`: room id from an invite link; null when this player hosts. */
-  | { name: 'duel'; invite: string | null }
+  | { name: 'duel'; invite: string | null; byCode?: boolean }
   | { name: 'hands'; matchId: string; from: HistorySource }
   | { name: 'replay'; matchId: string; hand: number; from: HistorySource }
   | { name: 'save_error'; code: string }
@@ -236,6 +236,14 @@ export function App() {
                 }
               : undefined
           }
+          onJoinByCode={
+            PVP_URL
+              ? () => {
+                  track('duel_opened', { source: 'code' });
+                  setScreen({ name: 'duel', invite: null, byCode: true });
+                }
+              : undefined
+          }
           opponent={opponent}
           onPickOpponent={() => setPickerOpen(true)}
         />
@@ -281,9 +289,10 @@ export function App() {
     case 'duel':
       content = (
         <Duel
-          key={screen.invite ?? 'host'}
+          key={screen.invite ?? (screen.byCode ? 'code' : 'host')}
           duel={duel}
           inviteRoomId={screen.invite}
+          enterCode={Boolean(screen.byCode)}
           onOpenInvite={openInvite}
           onRules={() => setRulesOpen(true)}
           onExit={() => {

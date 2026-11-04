@@ -4,7 +4,7 @@ import { ChipIcon, HandshakeIcon, Trophy, CardsIcon } from '../components/icons'
 import { PlayingCard } from '../components/PlayingCard';
 import { describeHand, plural } from '../game/format';
 import { track } from '../game/analytics';
-import { inviteLink, parseRoom } from '../pvp/config';
+import { formatCode, inviteLink, parseCode, parseRoom } from '../pvp/config';
 import type { RoomView, SlotView } from '../pvp/types';
 import type { Duel as DuelController } from '../pvp/useDuel';
 import { copyText, shareLink } from '../vk';
@@ -16,6 +16,8 @@ interface Props {
   inviteRoomId: string | null;
   /** Opens a friend's room from a pasted invite link. */
   onOpenInvite: (roomId: string) => void;
+  /** "Войти по коду" from the home screen: ask for the code, create nothing. */
+  enterCode?: boolean;
   onExit: () => void;
   onRules: () => void;
 }
@@ -49,20 +51,38 @@ function Center({ title, text, children }: { title: string; text?: string; child
   );
 }
 
-/** "Друг уже прислал ссылку?": joins without relying on VK passing the link through. */
-function PasteInvite({ ownRoom, onOpen }: { ownRoom: string; onOpen: (roomId: string) => void }) {
-  const [open, setOpen] = useState(false);
+/** "Друг прислал ссылку или код?": joins without relying on VK passing the link through. */
+function PasteInvite({
+  ownRoom,
+  ownCode,
+  onOpen,
+  onCode,
+  startOpen = false,
+}: {
+  ownRoom: string;
+  ownCode: string;
+  startOpen?: boolean;
+  onOpen: (roomId: string) => void;
+  onCode: (code: string) => void;
+}) {
+  const [open, setOpen] = useState(startOpen);
   const [text, setText] = useState('');
   const [bad, setBad] = useState(false);
   if (!open) {
     return (
       <button className="btn btn--ghost btn--block" onClick={() => setOpen(true)}>
-        Друг уже прислал ссылку?
+        Друг прислал ссылку или код?
       </button>
     );
   }
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
+    const code = parseCode(text);
+    if (code) {
+      if (code === ownCode) return setBad(true);
+      track('duel_code_entered', {});
+      return onCode(code);
+    }
     const id = parseRoom(text);
     if (!id || id === ownRoom) return setBad(true);
     track('duel_invite_pasted', {});
@@ -71,7 +91,7 @@ function PasteInvite({ ownRoom, onOpen }: { ownRoom: string; onOpen: (roomId: st
   return (
     <form className="duel-paste" onSubmit={submit}>
       <label className="duel__hint" htmlFor="duel-paste">
-        Скопируйте ссылку из сообщения друга и вставьте сюда
+        Введите код комнаты из 6 цифр или вставьте ссылку из сообщения друга
       </label>
       <input
         id="duel-paste"
@@ -81,14 +101,15 @@ function PasteInvite({ ownRoom, onOpen }: { ownRoom: string; onOpen: (roomId: st
           setText(e.target.value);
           setBad(false);
         }}
-        placeholder="https://vk.com/app…#room=…"
+        placeholder="Код, например 482 913, или ссылка"
+        inputMode={startOpen ? 'numeric' : undefined}
         autoComplete="off"
         autoCapitalize="off"
         spellCheck={false}
         aria-invalid={bad}
         autoFocus
       />
-      {bad && <p className="duel-paste__error">Это не ссылка на чужую комнату</p>}
+      {bad && <p className="duel-paste__error">Это не код и не ссылка на комнату друга</p>}
       <button type="submit" className="btn btn--primary btn--block" disabled={!text.trim()}>
         Войти в комнату
       </button>
@@ -96,7 +117,7 @@ function PasteInvite({ ownRoom, onOpen }: { ownRoom: string; onOpen: (roomId: st
   );
 }
 
-export function Duel({ duel, inviteRoomId, onOpenInvite, onExit, onRules }: Props) {
+export function Duel({ duel, inviteRoomId, onOpenInvite, enterCode = false, onExit, onRules }: Props) {
   const { state } = duel;
   const room = state.room;
   const asked = useRef(false);
@@ -110,8 +131,8 @@ export function Duel({ duel, inviteRoomId, onOpenInvite, onExit, onRules }: Prop
     if (state.conn !== 'online' || asked.current || room) return;
     asked.current = true;
     if (inviteRoomId) duel.peek(inviteRoomId);
-    else duel.createRoom();
-  }, [state.conn, room, inviteRoomId, duel]);
+    else if (!enterCode) duel.createRoom();
+  }, [state.conn, room, inviteRoomId, enterCode, duel]);
 
   // The host's own link, or a reload: take the seat back without asking, once.
   // A room of one's own that has closed since is just left behind.
@@ -123,6 +144,17 @@ export function Duel({ duel, inviteRoomId, onOpenInvite, onExit, onRules }: Prop
     if (preview.status === 'closed') onExit();
     else duel.join(preview.room_id);
   }, [preview, room, duel, onExit]);
+
+  // A code typed by hand: once the server finds the friend's room, open it
+  // like an invite link.
+  const byCode = useRef(false);
+  useEffect(() => {
+    if (!byCode.current || !preview || preview.room_id === room?.room_id) return;
+    byCode.current = false;
+    onOpenInvite(preview.room_id);
+  }, [preview, room, onOpenInvite]);
+
+  const [keepRoom, setKeepRoom] = useState(false);
 
   const exit = () => {
     duel.leave();
@@ -157,6 +189,34 @@ export function Duel({ duel, inviteRoomId, onOpenInvite, onExit, onRules }: Prop
   }
 
   const offline = state.conn !== 'online';
+
+  if (!room && enterCode && !inviteRoomId) {
+    const codeError =
+      state.error && state.error.code !== 'offline' && state.error.message ? state.error.message : null;
+    return (
+      <main className="center-screen duel">
+        <h1 className="center-screen__title">Войти по коду</h1>
+        <p className="center-screen__text">
+          Попросите друга нажать «Играть с другом» и продиктовать код комнаты из 6 цифр.
+        </p>
+        {offline && <div className="notice">Подключаемся к серверу…</div>}
+        <PasteInvite
+          ownRoom=""
+          ownCode=""
+          startOpen
+          onOpen={onOpenInvite}
+          onCode={(code) => {
+            byCode.current = true;
+            duel.findByCode(code);
+          }}
+        />
+        {codeError && <p className="duel__error">{codeError}</p>}
+        <button className="btn btn--ghost btn--block" onClick={onExit}>
+          На главную
+        </button>
+      </main>
+    );
+  }
 
   if (!room) {
     if (inviteRoomId && state.error && ['room_not_found', 'room_closed'].includes(state.error.code)) {
@@ -351,12 +411,38 @@ export function Duel({ duel, inviteRoomId, onOpenInvite, onExit, onRules }: Prop
         {opponent ? <SeatCard slot={opponent} label={opponent.name} /> : <EmptySeat />}
       </div>
 
+      {room.status === 'waiting' && room.you_are_host && state.reused && !keepRoom && (
+        <div className="duel-reused" role="status">
+          <b>Твоя комната ещё открыта</b>
+          <span>Ссылка и код прежние — друг, может быть, уже ждёт.</span>
+          <div className="duel-reused__actions">
+            <button className="btn btn--secondary btn--small" onClick={() => setKeepRoom(true)}>
+              Продолжить
+            </button>
+            <button className="btn btn--ghost btn--small" disabled={offline} onClick={() => duel.createRoom()}>
+              Создать новую
+            </button>
+          </div>
+        </div>
+      )}
+
       {room.status === 'waiting' && room.you_are_host && (
         <section className="duel__invite">
           <p className="duel__text">
-            Отправьте другу ссылку в VK: он откроет игру прямо в этой комнате. Комната ждёт 15 минут,
-            «Играть с другом» на главной вернёт вас сюда.
+            Отправьте другу ссылку в VK или продиктуйте код: он откроет игру прямо в этой комнате.
+            Комната ждёт 15 минут, «Играть с другом» на главной вернёт вас сюда.
           </p>
+          <button
+            className="duel-code"
+            onClick={async () => {
+              track('duel_code_copied', {});
+              say((await copyText(room.code)) ? 'Код скопирован' : `Код: ${formatCode(room.code)}`);
+            }}
+            aria-label={`Код комнаты ${formatCode(room.code)}, нажмите, чтобы скопировать`}
+          >
+            <span className="duel-code__label">Код комнаты</span>
+            <span className="duel-code__digits">{formatCode(room.code)}</span>
+          </button>
           <button
             className="btn btn--primary btn--hero"
             disabled={offline}
@@ -377,7 +463,15 @@ export function Duel({ duel, inviteRoomId, onOpenInvite, onExit, onRules }: Prop
           >
             Скопировать ссылку
           </button>
-          <PasteInvite ownRoom={room.room_id} onOpen={onOpenInvite} />
+          <PasteInvite
+            ownRoom={room.room_id}
+            ownCode={room.code}
+            onOpen={onOpenInvite}
+            onCode={(code) => {
+              byCode.current = true;
+              duel.findByCode(code);
+            }}
+          />
         </section>
       )}
 

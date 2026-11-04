@@ -29,6 +29,11 @@ pub enum ClientMsg {
     CreateRoom {
         request_id: String,
     },
+    /// A friend dictated the room code: answers like `peek_room` (a preview
+    /// with the room id), only for a room still waiting for a guest.
+    FindRoom {
+        code: String,
+    },
     /// Who invited me, and can I still join? Does not join.
     PeekRoom {
         room_id: String,
@@ -76,6 +81,7 @@ impl ClientMsg {
     pub fn ids(&self) -> Vec<&str> {
         match self {
             ClientMsg::CreateRoom { request_id } => vec![request_id],
+            ClientMsg::FindRoom { code } => vec![code],
             ClientMsg::PlayerAction {
                 room_id,
                 match_id,
@@ -112,6 +118,9 @@ pub enum ServerMsg {
     RoomCreated {
         room_id: String,
         request_id: String,
+        /// The host's room that was still open ("Твоя комната ещё открыта"),
+        /// not a new one.
+        reused: bool,
     },
     RoomPreview {
         preview: RoomPreview,

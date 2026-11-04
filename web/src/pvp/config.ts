@@ -64,6 +64,17 @@ export function parseRoom(text: string | null | undefined): string | null {
   return null;
 }
 
+/** A room code typed by hand: "482 913", "482-913" → "482913"; otherwise null. */
+export function parseCode(text: string | null | undefined): string | null {
+  const digits = (text ?? '').replace(/[\s-]/g, '');
+  return /^\d{6}$/.test(digits) ? digits : null;
+}
+
+/** "482913" → "482 913": easier to read aloud. */
+export function formatCode(code: string): string {
+  return `${code.slice(0, 3)} ${code.slice(3)}`;
+}
+
 /** The room id from an invite link opened in the app, if any. */
 export function roomFromLocation(): string | null {
   return parseRoom(window.location.hash) ?? parseRoom(window.location.search);

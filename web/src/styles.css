@@ -1138,6 +1138,17 @@ p {
   text-align: center;
 }
 
+.home__build {
+  align-self: center;
+  margin-top: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--bg-surface-2);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
 .home__legal {
   color: var(--text-secondary);
   font-size: 13px;
@@ -2150,4 +2161,61 @@ p {
   .thinking-dots i {
     opacity: 0.7;
   }
+}
+
+/* Код комнаты: продиктовать другу вместо ссылки; нажатие копирует. */
+.duel-code {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  width: 100%;
+  min-height: 72px;
+  padding: 10px 14px;
+  border: 2px dashed var(--border);
+  border-radius: var(--radius-control);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.duel-code__label {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.duel-code__digits {
+  font-size: 32px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* «Твоя комната ещё открыта»: вернуться в прежнюю или создать новую. */
+.duel-reused {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: var(--radius-control);
+  background: var(--bg-surface-2);
+  color: var(--text-primary);
+  font-size: 14px;
+}
+
+.duel-reused span {
+  color: var(--text-secondary);
+}
+
+.duel-reused__actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.duel-reused__actions .btn {
+  flex: 1;
+  min-height: 44px;
 }

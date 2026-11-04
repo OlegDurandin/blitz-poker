@@ -33,6 +33,8 @@ export interface GameView {
 
 export interface RoomView {
   room_id: string;
+  /** Six digits to dictate instead of the link. */
+  code: string;
   status: RoomStatus;
   close_reason: CloseReason | null;
   left_by_me: boolean | null;
@@ -56,6 +58,7 @@ export interface RoomPreview {
 
 export type ClientMsg =
   | { type: 'create_room'; request_id: string }
+  | { type: 'find_room'; code: string }
   | { type: 'peek_room'; room_id: string }
   | { type: 'join_room'; room_id: string }
   | { type: 'leave_room'; room_id: string }
@@ -77,7 +80,7 @@ export type ClientMsg =
 
 export type ServerMsg = { v: number; server_seq: number } & (
   | { type: 'welcome'; user: { name: string; photo: string | null }; server_time_ms: number }
-  | { type: 'room_created'; room_id: string; request_id: string }
+  | { type: 'room_created'; room_id: string; request_id: string; reused: boolean }
   | { type: 'room_preview'; preview: RoomPreview }
   | { type: 'state_snapshot'; server_time_ms: number; room: RoomView }
   | { type: 'action_accepted'; action_id: string; state_version: number; duplicate: boolean }

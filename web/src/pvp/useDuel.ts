@@ -18,6 +18,8 @@ export interface DuelState {
   error: { code: string; message: string } | null;
   /** An action sent and not yet confirmed: buttons stay locked. */
   pending: boolean;
+  /** "Играть с другом" brought the host back to a room that was still open. */
+  reused: boolean;
 }
 
 function randomId(): string {
@@ -33,6 +35,7 @@ export function useDuel(active: boolean) {
     preview: null,
     error: null,
     pending: false,
+    reused: false,
   });
   const conn = useRef<DuelConnection | null>(null);
   const roomId = useRef<string | null>(null);
@@ -45,7 +48,8 @@ export function useDuel(active: boolean) {
       case 'room_created':
         roomId.current = msg.room_id;
         activeRoom.set(msg.room_id);
-        track('duel_room_created', {});
+        setState((s) => ({ ...s, reused: Boolean(msg.reused) }));
+        track('duel_room_created', { reused: Boolean(msg.reused) });
         break;
       case 'room_preview':
         setState((s) => ({ ...s, preview: msg.preview, error: null }));
@@ -116,7 +120,7 @@ export function useDuel(active: boolean) {
     roomId.current = null;
     activeRoom.set(null);
     pendingAction.current = null;
-    setState((s) => ({ ...s, room: null, preview: null, error: null, pending: false }));
+    setState((s) => ({ ...s, room: null, preview: null, error: null, pending: false, reused: false }));
   }, []);
 
   return {
@@ -127,6 +131,11 @@ export function useDuel(active: boolean) {
       if (roomId.current) send({ type: 'leave_room', room_id: roomId.current });
       reset();
       send({ type: 'create_room', request_id: randomId() });
+    },
+    /** A friend's room by its six-digit code: answers with a preview, like `peek`. */
+    findByCode: (code: string) => {
+      setState((s) => ({ ...s, preview: null, error: null }));
+      send({ type: 'find_room', code });
     },
     peek: (id: string) => {
       setState((s) => ({ ...s, preview: null, error: null }));

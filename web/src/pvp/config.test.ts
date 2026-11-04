@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseRoom } from './config';
+import { formatCode, parseCode, parseRoom } from './config';
 
 const ID = 'O6ceAbCdEfGhIjKlMn0_-q';
 
@@ -23,5 +23,22 @@ describe('parseRoom', () => {
     expect(parseRoom('https://vk.com/app123')).toBeNull();
     expect(parseRoom('#room=short')).toBeNull();
     expect(parseRoom('%E0%A4%A')).toBeNull();
+  });
+});
+
+describe('parseCode', () => {
+  it('accepts six digits typed with spaces or a dash', () => {
+    expect(parseCode('482913')).toBe('482913');
+    expect(parseCode(' 482 913 ')).toBe('482913');
+    expect(parseCode('482-913')).toBe('482913');
+    expect(parseCode('012345')).toBe('012345');
+  });
+  it('rejects anything else, including links', () => {
+    for (const bad of ['', '12345', '1234567', '12a456', `#room=${ID}`, null]) {
+      expect(parseCode(bad)).toBeNull();
+    }
+  });
+  it('formats for reading aloud', () => {
+    expect(formatCode('482913')).toBe('482 913');
   });
 });

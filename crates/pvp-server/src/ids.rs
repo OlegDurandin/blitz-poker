@@ -16,6 +16,26 @@ pub fn room_id() -> String {
     URL_SAFE_NO_PAD.encode(random_bytes::<16>())
 }
 
+/// Six digits a person can dictate or type. Derived from the room id (FNV-1a),
+/// so it survives a restart with the room and needs no storage. Not a secret on
+/// its own: it only finds a room still waiting for a guest, and lookups are
+/// rate-limited per user (`hub`).
+pub fn room_code(room_id: &str) -> String {
+    let hash = room_id.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+    });
+    format!("{:06}", hash % 1_000_000)
+}
+
+/// "482 913", "482-913", " 482913 " → "482913"; anything else → None.
+pub fn parse_code(text: &str) -> Option<String> {
+    let digits: String = text
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '-')
+        .collect();
+    (digits.len() == 6 && digits.bytes().all(|b| b.is_ascii_digit())).then_some(digits)
+}
+
 /// 256-bit bearer token for sessions and one-time WebSocket tickets.
 pub fn token() -> String {
     URL_SAFE_NO_PAD.encode(random_bytes::<32>())
@@ -68,6 +88,21 @@ mod tests {
         assert_ne!(a, room_id());
         assert_eq!(token().len(), 43);
         assert_eq!(log_tag(&a).chars().count(), 5);
+    }
+
+    #[test]
+    fn room_codes_are_six_digits_and_stable() {
+        let id = room_id();
+        let code = room_code(&id);
+        assert_eq!(code.len(), 6);
+        assert!(code.bytes().all(|b| b.is_ascii_digit()));
+        assert_eq!(room_code(&id), code, "same room, same code");
+        assert_eq!(parse_code(" 482 913 ").as_deref(), Some("482913"));
+        assert_eq!(parse_code("482-913").as_deref(), Some("482913"));
+        assert_eq!(parse_code("012345").as_deref(), Some("012345"));
+        for bad in ["", "12345", "1234567", "12a456", "１２３４５６"] {
+            assert_eq!(parse_code(bad), None, "{bad}");
+        }
     }
 
     #[test]

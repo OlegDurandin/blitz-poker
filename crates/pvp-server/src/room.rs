@@ -796,6 +796,7 @@ impl Room {
         };
         Some(RoomView {
             room_id: self.id.clone(),
+            code: crate::ids::room_code(&self.id),
             status: self.status,
             close_reason: self.close_reason,
             left_by_me: self.left.map(|s| s == slot),
@@ -910,6 +911,8 @@ pub struct ScoreView {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct RoomView {
     pub room_id: String,
+    /// Six digits to dictate instead of the link (`ids::room_code`).
+    pub code: String,
     pub status: Status,
     pub close_reason: Option<CloseReason>,
     pub left_by_me: Option<bool>,

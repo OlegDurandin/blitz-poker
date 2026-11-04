@@ -21,6 +21,8 @@ interface Props {
   onPickOpponent: () => void;
   /** "Играть с другом"; absent when no duel server is configured. */
   onDuel?: () => void;
+  /** "Войти по коду": a friend's room by its six digits. */
+  onJoinByCode?: () => void;
 }
 
 export function Home(p: Props) {
@@ -38,6 +40,7 @@ export function Home(p: Props) {
         <HeroSpade />
         <h1 className="home__title">Покер за 5 минут</h1>
         <p className="home__subtitle">8 раздач против ИИ</p>
+        <p className="home__build">Версия {BUILD}</p>
       </div>
 
       <div className="home__actions">
@@ -68,6 +71,11 @@ export function Home(p: Props) {
         {p.onDuel && (
           <button className="btn btn--secondary btn--hero home__duel" onClick={p.onDuel}>
             Играть с другом
+          </button>
+        )}
+        {p.onJoinByCode && (
+          <button className="btn btn--secondary btn--block" onClick={p.onJoinByCode}>
+            Войти по коду
           </button>
         )}
         <button className="btn btn--ghost btn--block" onClick={p.onRules}>
@@ -106,7 +114,6 @@ export function Home(p: Props) {
 
       <p className="home__legal">
         Только для развлечения: фишки виртуальные, не покупаются и не выводятся.
-        <span className="home__build"> · версия {BUILD}</span>
       </p>
     </main>
   );
