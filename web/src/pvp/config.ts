@@ -1,4 +1,5 @@
-// Where the duel server lives and how invite links look.
+// Where the duel server lives, room ids and codes. Platform specifics (sign-in,
+// invite links) live in ../platform.
 
 /** Base URL of the PvP server, e.g. https://pvp.example.ru. Unset: duels are hidden. */
 export const PVP_URL: string | undefined = import.meta.env.VITE_PVP_URL || undefined;
@@ -9,22 +10,12 @@ export const BUILD: string = typeof __BUILD__ === 'string' ? __BUILD__ : 'dev';
 /** The fragment the app was opened with, before anything could change it. */
 export const ENTRY_HASH: string = typeof window === 'undefined' ? '' : window.location.hash;
 
-/** Launch parameters VK signed for this session (verified by the server). */
-export function launchParams(): string {
-  return window.location.search.slice(1);
-}
-
-/** Opened inside VK (launch parameters carry VK's signature). */
-export function inVk(): boolean {
-  return new URLSearchParams(window.location.search).has('sign');
-}
-
 const GUEST_KEY = 'blitz.v1.guest_key';
 const GUEST_NAME = 'blitz.v1.guest_name';
 let memoryKey: string | null = null;
 
 /**
- * Outside VK: a random key this browser keeps, so a guest who reloads gets
+ * Outside a messenger: a random key this browser keeps, so a guest who reloads gets
  * the same seat back, and the name they typed. Guests only join by code.
  */
 export const guest = {
@@ -72,23 +63,12 @@ export function devUserId(): number | null {
   return Number.isInteger(id) && id > 0 ? id : null;
 }
 
-function appId(): string | null {
-  return new URLSearchParams(window.location.search).get('vk_app_id') ?? import.meta.env.VITE_VK_APP_ID ?? null;
-}
-
-/**
- * The link a friend taps. VK passes the part after `#` to the Mini App as
- * `location.hash`. Needs checking on iOS, Android and desktop VK; "Скопировать
- * ссылку" gives the same link as a fallback.
- */
-export function inviteLink(roomId: string): string {
-  const id = appId();
-  const hash = `room=${roomId}`;
-  if (id) return `https://vk.com/app${id}#${hash}`;
-  return `${window.location.origin}${window.location.pathname}${window.location.search}#${hash}`;
-}
-
 const ROOM_ID = /^[A-Za-z0-9_-]{16,64}$/;
+
+/** A bare room id (base64url, as the server makes them). */
+export function isRoomId(text: string): boolean {
+  return ROOM_ID.test(text);
+}
 
 /**
  * The room id in an invite link, a fragment or a bare id. Lenient on purpose:
@@ -123,11 +103,6 @@ export function formatCode(code: string): string {
   return `${code.slice(0, 3)} ${code.slice(3)}`;
 }
 
-/** The room id from an invite link opened in the app, if any. */
-export function roomFromLocation(): string | null {
-  return parseRoom(window.location.hash) ?? parseRoom(window.location.search);
-}
-
 const ACTIVE_ROOM_KEY = 'blitz.v1.duel_room';
 
 /** The duel room this player is in, so a WebView reload returns to it. */
@@ -148,8 +123,3 @@ export const activeRoom = {
     }
   },
 };
-
-/** Forget the invite in the address bar once it has been used. */
-export function clearRoomFromLocation(): void {
-  if (window.location.hash) history.replaceState(null, '', window.location.pathname + window.location.search);
-}

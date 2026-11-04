@@ -7,7 +7,10 @@ use std::net::SocketAddr;
 pub struct Config {
     pub bind: SocketAddr,
     pub app_id: u64,
+    /// VK "Защищённый ключ"; empty: VK sign-in is off.
     pub app_secret: String,
+    /// Telegram bot token of the Mini App; None: Telegram sign-in is off.
+    pub tg_bot_token: Option<String>,
     pub db_path: String,
     /// Allowed `Origin`s: exact values, or suffixes starting with a dot
     /// (".vk-apps.ru" allows every VK hosting subdomain over https).
@@ -38,14 +41,16 @@ impl Config {
             .map_err(|_| "PVP_BIND must be host:port")?;
         let dev_auth = var("PVP_DEV_AUTH").is_some_and(|v| v == "1") && bind.ip().is_loopback();
         let app_secret = var("VK_APP_SECRET").unwrap_or_default();
-        if app_secret.is_empty() && !dev_auth {
-            return Err("VK_APP_SECRET is required".into());
+        let tg_bot_token = var("TG_BOT_TOKEN");
+        if app_secret.is_empty() && tg_bot_token.is_none() && !dev_auth {
+            return Err("VK_APP_SECRET or TG_BOT_TOKEN is required".into());
         }
         let defaults = Timings::default();
         Ok(Config {
             bind,
             app_id: num("VK_APP_ID", 0)?,
             app_secret,
+            tg_bot_token,
             db_path: var("PVP_DB").unwrap_or_else(|| "pvp.sqlite".into()),
             allowed_origins: var("PVP_ALLOWED_ORIGINS")
                 .unwrap_or_else(|| ".vk-apps.ru,.vk-apps.com,http://localhost:5173".into())

@@ -9,7 +9,7 @@ import { showdownMarks, showdownReason, type Focus } from '../game/showdown';
 import { botName, opponentInfo } from '../game/opponents';
 import { prefersReducedMotion } from '../game/motion';
 import type { TutorialStep } from '../game/storage';
-import { haptic } from '../vk';
+import { platform } from '../platform';
 
 interface Props {
   view: PlayerView;
@@ -111,7 +111,7 @@ export function Table(props: Props) {
   }, [myTurn]);
 
   const act = (action: PlayerAction) => {
-    haptic();
+    platform.haptic();
     setRaiseOpen(false);
     if (tutorial && tutorialStep === 'action') props.onTutorialStep('result');
     props.onAct(action);

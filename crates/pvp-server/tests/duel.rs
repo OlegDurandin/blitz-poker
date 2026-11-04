@@ -18,6 +18,7 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 const APP_ID: u64 = 54872714;
 const SECRET: &str = "test-secret";
+const TG_TOKEN: &str = "123456:test-bot-token";
 const ORIGIN: &str = "https://prod-app54872714-x.pages-ac.vk-apps.ru";
 
 fn config(db: &str) -> Config {
@@ -25,6 +26,7 @@ fn config(db: &str) -> Config {
         bind: "127.0.0.1:0".parse().unwrap(),
         app_id: APP_ID,
         app_secret: SECRET.into(),
+        tg_bot_token: Some(TG_TOKEN.into()),
         db_path: db.into(),
         allowed_origins: vec![".vk-apps.ru".into()],
         launch_max_age_secs: 86_400,
@@ -133,6 +135,40 @@ impl Client {
             addr,
             "/api/auth",
             &json!({ "launch_params": launch(user), "name": name }),
+            None,
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        let ws = open_ws(addr, body["ticket"].as_str().unwrap(), ORIGIN)
+            .await
+            .unwrap();
+        let mut c = Client {
+            addr,
+            session: body["session"].as_str().unwrap().into(),
+            ws,
+            seen: vec![],
+        };
+        c.until(|m| m["type"] == "welcome").await;
+        c
+    }
+
+    /// From Telegram: signs in with `initData` signed for the bot.
+    async fn login_telegram(addr: SocketAddr, user_id: u64, first_name: &str) -> Client {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            .to_string();
+        let user = json!({ "id": user_id, "first_name": first_name }).to_string();
+        let init_data = pvp_server::telegram::signed_init_data(
+            &[("user", &user), ("auth_date", &now)],
+            TG_TOKEN,
+        );
+        let (status, body) = post(
+            addr,
+            "/api/auth",
+            // The client's name is ignored: Telegram's signed one wins.
+            &json!({ "tg_init_data": init_data, "name": "подделка" }),
             None,
         )
         .await;
@@ -726,6 +762,54 @@ async fn new_guest_keys_do_not_reset_limits() {
     assert_eq!(
         (status, body["error"]["code"].as_str()),
         (429, Some("busy"))
+    );
+    s.stop();
+}
+
+/// VK and Telegram players share one space: a Telegram player joins a VK
+/// host's room by its code and they play. Same numeric ids do not collide.
+#[tokio::test]
+async fn telegram_player_joins_a_vk_room_by_code() {
+    let s = start(":memory:").await;
+    let mut host = Client::login(s.addr, 1001, "Олег").await;
+    host.send(json!({ "type": "create_room", "request_id": "r1" }))
+        .await;
+    let room_id = host.until(|m| m["type"] == "room_created").await["room_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let code = host.snapshot(|r| r["status"] == "waiting").await["code"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Same number as the VK host, different platform: a different player.
+    let mut tg = Client::login_telegram(s.addr, 1001, "Маша").await;
+    tg.send(json!({ "type": "find_room", "code": code })).await;
+    let preview = tg.until(|m| m["type"] == "room_preview").await;
+    assert_eq!(preview["preview"]["already_member"], false);
+    tg.send(json!({ "type": "join_room", "room_id": room_id }))
+        .await;
+    tg.snapshot(|r| r["status"] == "ready").await;
+    let lobby = host.snapshot(|r| r["status"] == "ready").await;
+    assert_eq!(lobby["opponent"]["name"], "Маша");
+
+    for c in [&mut host, &mut tg] {
+        c.send(json!({ "type": "set_ready", "room_id": room_id, "ready": true }))
+            .await;
+    }
+    tg.snapshot(|r| r["status"] == "playing").await;
+
+    let (status, body) = post(
+        s.addr,
+        "/api/auth",
+        &json!({ "tg_init_data": "user=%7B%22id%22%3A1%7D&auth_date=1&hash=00" }),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (status, body["error"]["code"].as_str()),
+        (401, Some("bad_launch_params"))
     );
     s.stop();
 }

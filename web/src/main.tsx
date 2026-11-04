@@ -2,10 +2,10 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import { reloadIfStale } from './freshness';
-import { initVk } from './vk';
+import { platform } from './platform';
 import './styles.css';
 
-initVk();
+platform.init();
 
 // A stale cached build reloads once before anything renders.
 void reloadIfStale().then((reloading) => {

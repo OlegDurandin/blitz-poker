@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PlayerAction } from '../engine/types';
 import { track } from '../game/analytics';
-import { getUserInfo } from '../vk';
+import { platform } from '../platform';
 import { PVP_URL, activeRoom, devUserId, guest } from './config';
 import { DuelConnection, type ConnState } from './connection';
 import type { RoomPreview, RoomView, ServerMsg } from './types';
@@ -87,7 +87,7 @@ export function useDuel(active: boolean) {
   useEffect(() => {
     if (!active || !PVP_URL) return;
     let stopped = false;
-    void getUserInfo().then((user) => {
+    void platform.getUser().then((user) => {
       if (stopped) return;
       const dev = devUserId();
       const me = user ?? { name: dev ? `Игрок ${dev}` : guest.name() || 'Игрок', photo: null };

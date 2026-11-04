@@ -32,8 +32,8 @@ impl Dealer for TestDealer {
     }
 }
 
-const HOST: u64 = 100;
-const GUEST: u64 = 200;
+const HOST: PlayerId = PlayerId::from_raw(100);
+const GUEST: PlayerId = PlayerId::from_raw(200);
 const T: Timings = Timings {
     turn_ms: 20_000,
     bank_ms: 30_000,
@@ -44,10 +44,10 @@ const T: Timings = Timings {
     runout_pause_ms: 6_500,
 };
 
-fn profile(id: u64) -> Profile {
+fn profile(id: PlayerId) -> Profile {
     Profile {
-        vk_id: id,
-        name: format!("Игрок {id}"),
+        id,
+        name: format!("Игрок {}", id.raw()),
         photo: None,
     }
 }
@@ -61,7 +61,7 @@ fn ready_room(d: &mut TestDealer) -> Room {
     r
 }
 
-fn to_act(r: &Room) -> u64 {
+fn to_act(r: &Room) -> PlayerId {
     let g = r.game.as_ref().unwrap();
     if g.m.hand.to_act == Some(Seat::Human) {
         HOST
@@ -100,7 +100,10 @@ fn two_seats_only_and_the_host_keeps_the_host_seat() {
     assert_eq!(r.status, Status::Waiting);
     assert_eq!(r.join(profile(GUEST), 2), Ok(Slot::Guest));
     assert_eq!(r.status, Status::Ready);
-    assert_eq!(r.join(profile(300), 3), Err(RoomError::Full));
+    assert_eq!(
+        r.join(profile(PlayerId::from_raw(300)), 3),
+        Err(RoomError::Full)
+    );
     assert_eq!(
         r.join(profile(GUEST), 4),
         Ok(Slot::Guest),
@@ -152,7 +155,10 @@ fn each_player_sees_only_their_own_cards() {
             assert!(!json.contains(&format!("\"{c}\"")), "{me} sees {c}");
         }
     }
-    assert!(r.view_for(300, &T).is_none(), "outsiders get nothing");
+    assert!(
+        r.view_for(PlayerId::from_raw(300), &T).is_none(),
+        "outsiders get nothing"
+    );
 }
 
 #[test]
@@ -190,7 +196,7 @@ fn actions_are_idempotent_and_versioned() {
         Err(RoomError::InvalidAmount)
     );
     assert_eq!(
-        r.action(300, &id, "x", v, a, &T, 40),
+        r.action(PlayerId::from_raw(300), &id, "x", v, a, &T, 40),
         Err(RoomError::NotMember)
     );
 

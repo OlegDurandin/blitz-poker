@@ -16,6 +16,7 @@
 //! and the head-to-head score. A 3–6 seat table would replace them with a
 //! seat list; see the README.
 
+use crate::player::PlayerId;
 use poker_core::card::Card;
 use poker_core::{EngineError, Match, MatchOutcome, Phase, PlayerAction, PlayerView, Seat};
 use serde::{Deserialize, Serialize};
@@ -77,21 +78,15 @@ impl Dealer for OsDealer {
 }
 
 /// A VK user as shown to the other player. The name and photo come from the
-/// client (VKWebAppGetUserInfo) and are display-only; `vk_id` is verified.
+/// client (VKWebAppGetUserInfo) and are display-only; `id` is verified.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Profile {
-    /// VK user id, or a guest id (`is_guest`).
-    pub vk_id: u64,
+    /// Verified on sign-in (VK, Telegram) or derived from a guest key.
+    /// Stored as `player`: rooms saved before other platforms still load.
+    #[serde(rename = "player")]
+    pub id: PlayerId,
     pub name: String,
     pub photo: Option<String>,
-}
-
-/// Guests (no VK sign-in) get ids with this bit set: far above any VK id.
-pub const GUEST_BIT: u64 = 1 << 62;
-
-/// A player who came in by room code without VK.
-pub fn is_guest(id: u64) -> bool {
-    id & GUEST_BIT != 0
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,8 +188,8 @@ pub struct Score {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
     MatchFinished {
-        host: u64,
-        guest: u64,
+        host: PlayerId,
+        guest: PlayerId,
         outcome_for_host: MatchOutcome,
         forfeit: Option<Slot>,
     },
@@ -313,14 +308,10 @@ impl Room {
         }
     }
 
-    pub fn slot_of(&self, vk_id: u64) -> Option<Slot> {
-        if self.host.profile.vk_id == vk_id {
+    pub fn slot_of(&self, player: PlayerId) -> Option<Slot> {
+        if self.host.profile.id == player {
             Some(Slot::Host)
-        } else if self
-            .guest
-            .as_ref()
-            .is_some_and(|g| g.profile.vk_id == vk_id)
-        {
+        } else if self.guest.as_ref().is_some_and(|g| g.profile.id == player) {
             Some(Slot::Guest)
         } else {
             None
@@ -341,8 +332,8 @@ impl Room {
         }
     }
 
-    fn require(&self, vk_id: u64) -> Result<Slot, RoomError> {
-        self.slot_of(vk_id).ok_or(RoomError::NotMember)
+    fn require(&self, player: PlayerId) -> Result<Slot, RoomError> {
+        self.slot_of(player).ok_or(RoomError::NotMember)
     }
 
     pub fn members(&self) -> impl Iterator<Item = &Member> {
@@ -366,7 +357,7 @@ impl Room {
     /// Enter the room. The host coming back (another device, a reload) gets
     /// the host seat again; it never takes the guest's place.
     pub fn join(&mut self, profile: Profile, now: u64) -> Result<Slot, RoomError> {
-        if let Some(slot) = self.slot_of(profile.vk_id) {
+        if let Some(slot) = self.slot_of(profile.id) {
             if self.status == Status::Closed {
                 return Err(RoomError::Closed);
             }
@@ -387,8 +378,8 @@ impl Room {
     }
 
     /// "Отменить комнату" (host) or "Выйти" (guest) before or after a match.
-    pub fn leave(&mut self, vk_id: u64, now: u64) -> Result<(), RoomError> {
-        let slot = self.require(vk_id)?;
+    pub fn leave(&mut self, player: PlayerId, now: u64) -> Result<(), RoomError> {
+        let slot = self.require(player)?;
         self.activity_ms = now;
         match (self.status, slot) {
             (Status::Closed, _) => Ok(()),
@@ -414,12 +405,12 @@ impl Room {
     /// "Готов". When both are ready the match starts, exactly once.
     pub fn set_ready(
         &mut self,
-        vk_id: u64,
+        player: PlayerId,
         ready: bool,
         dealer: &mut dyn Dealer,
         now: u64,
     ) -> Result<(), RoomError> {
-        let slot = self.require(vk_id)?;
+        let slot = self.require(player)?;
         if self.status != Status::Ready {
             return Err(RoomError::WrongState);
         }
@@ -467,7 +458,7 @@ impl Room {
     #[allow(clippy::too_many_arguments)]
     pub fn action(
         &mut self,
-        vk_id: u64,
+        player: PlayerId,
         match_id: &str,
         action_id: &str,
         expected_version: u64,
@@ -475,7 +466,7 @@ impl Room {
         timings: &Timings,
         now: u64,
     ) -> Result<ActionAck, RoomError> {
-        let slot = self.require(vk_id)?;
+        let slot = self.require(player)?;
         if self.status != Status::Playing {
             return Err(RoomError::WrongState);
         }
@@ -546,13 +537,13 @@ impl Room {
             m.grace_until_ms = None;
         }
         self.events.push(Event::MatchFinished {
-            host: self.host.profile.vk_id,
+            host: self.host.profile.id,
             guest: self
                 .guest
                 .as_ref()
                 .expect("a finished duel has a guest")
                 .profile
-                .vk_id,
+                .id,
             outcome_for_host: result.outcome,
             forfeit: result.forfeit.map(|s| {
                 if s == Seat::Human {
@@ -565,8 +556,8 @@ impl Room {
     }
 
     /// "Сдаться и выйти": an immediate technical defeat.
-    pub fn surrender(&mut self, vk_id: u64, now: u64) -> Result<(), RoomError> {
-        let slot = self.require(vk_id)?;
+    pub fn surrender(&mut self, player: PlayerId, now: u64) -> Result<(), RoomError> {
+        let slot = self.require(player)?;
         if self.status != Status::Playing {
             return Err(RoomError::WrongState);
         }
@@ -575,9 +566,15 @@ impl Room {
         Ok(())
     }
 
-    pub fn set_connected(&mut self, vk_id: u64, connected: bool, timings: &Timings, now: u64) {
+    pub fn set_connected(
+        &mut self,
+        player: PlayerId,
+        connected: bool,
+        timings: &Timings,
+        now: u64,
+    ) {
         let playing = self.status == Status::Playing;
-        let Some(slot) = self.slot_of(vk_id) else {
+        let Some(slot) = self.slot_of(player) else {
             return;
         };
         let m = self.member_mut(slot).expect("member");
@@ -588,11 +585,11 @@ impl Room {
     /// "Предложить реванш", or accept one the opponent already proposed.
     pub fn request_rematch(
         &mut self,
-        vk_id: u64,
+        player: PlayerId,
         dealer: &mut dyn Dealer,
         now: u64,
     ) -> Result<(), RoomError> {
-        let slot = self.require(vk_id)?;
+        let slot = self.require(player)?;
         if self.status != Status::Finished {
             return Err(RoomError::WrongState);
         }
@@ -611,19 +608,19 @@ impl Room {
 
     pub fn accept_rematch(
         &mut self,
-        vk_id: u64,
+        player: PlayerId,
         dealer: &mut dyn Dealer,
         now: u64,
     ) -> Result<(), RoomError> {
-        let slot = self.require(vk_id)?;
+        let slot = self.require(player)?;
         if self.status != Status::Finished || self.rematch_by != Some(slot.other()) {
             return Err(RoomError::WrongState);
         }
-        self.request_rematch(vk_id, dealer, now)
+        self.request_rematch(player, dealer, now)
     }
 
-    pub fn decline_rematch(&mut self, vk_id: u64, now: u64) -> Result<(), RoomError> {
-        let slot = self.require(vk_id)?;
+    pub fn decline_rematch(&mut self, player: PlayerId, now: u64) -> Result<(), RoomError> {
+        let slot = self.require(player)?;
         if self.status != Status::Finished || self.rematch_by != Some(slot.other()) {
             return Err(RoomError::WrongState);
         }
@@ -755,9 +752,9 @@ impl Room {
         self.activity_ms = now;
     }
 
-    /// Everything `vk_id` may see of the room right now.
-    pub fn view_for(&self, vk_id: u64, timings: &Timings) -> Option<RoomView> {
-        let slot = self.slot_of(vk_id)?;
+    /// Everything `player` may see of the room right now.
+    pub fn view_for(&self, player: PlayerId, timings: &Timings) -> Option<RoomView> {
+        let slot = self.slot_of(player)?;
         let me = self.member(slot).expect("member");
         let opponent = self.member(slot.other());
         let game = self.game.as_ref().map(|g| {
@@ -832,13 +829,13 @@ impl Room {
     }
 
     /// What someone holding the invite link sees before joining.
-    pub fn preview(&self, vk_id: u64) -> RoomPreview {
+    pub fn preview(&self, player: PlayerId) -> RoomPreview {
         RoomPreview {
             room_id: self.id.clone(),
             host_name: self.host.profile.name.clone(),
             host_photo: self.host.profile.photo.clone(),
             joinable: self.status == Status::Waiting,
-            already_member: self.slot_of(vk_id).is_some(),
+            already_member: self.slot_of(player).is_some(),
             status: self.status,
         }
     }

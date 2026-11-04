@@ -4,10 +4,10 @@ import { ChipIcon, HandshakeIcon, Trophy, CardsIcon } from '../components/icons'
 import { PlayingCard } from '../components/PlayingCard';
 import { describeHand, plural } from '../game/format';
 import { track } from '../game/analytics';
-import { devUserId, formatCode, guest, inVk, inviteLink, parseCode, parseRoom } from '../pvp/config';
+import { devUserId, formatCode, guest, parseCode, parseRoom } from '../pvp/config';
 import type { RoomView, SlotView } from '../pvp/types';
 import type { Duel as DuelController } from '../pvp/useDuel';
-import { copyText, shareLink } from '../vk';
+import { platform } from '../platform';
 import { Table, formatClock } from './Table';
 
 interface Props {
@@ -162,7 +162,7 @@ export function Duel({ duel, inviteRoomId, onOpenInvite, enterCode = false, onEx
   }, [state.error]);
 
   const [keepRoom, setKeepRoom] = useState(false);
-  const isGuest = !inVk() && devUserId() === null;
+  const isGuest = !platform.canHost && devUserId() === null;
   const [guestName, setGuestName] = useState(() => guest.name());
 
   const exit = () => {
@@ -409,7 +409,8 @@ export function Duel({ duel, inviteRoomId, onOpenInvite, enterCode = false, onEx
   }
 
   // Waiting for a friend / both deciding they are ready.
-  const link = inviteLink(room.room_id);
+  // Links open the host's own messenger; a friend elsewhere uses the code.
+  const link = platform.inviteLink(room.room_id);
   const expiresIn = room.expires_at_ms ? room.expires_at_ms - now : null;
   return (
     <main className="duel duel--lobby">
@@ -464,33 +465,37 @@ export function Duel({ duel, inviteRoomId, onOpenInvite, enterCode = false, onEx
             className="duel-code"
             onClick={async () => {
               track('duel_code_copied', {});
-              say((await copyText(room.code)) ? 'Код скопирован' : `Код: ${formatCode(room.code)}`);
+              say((await platform.copy(room.code)) ? 'Код скопирован' : `Код: ${formatCode(room.code)}`);
             }}
             aria-label={`Код комнаты ${formatCode(room.code)}, нажмите, чтобы скопировать`}
           >
             <span className="duel-code__label">Код комнаты</span>
             <span className="duel-code__digits">{formatCode(room.code)}</span>
           </button>
-          <button
-            className="btn btn--primary btn--hero"
-            disabled={offline}
-            onClick={async () => {
-              const shared = await shareLink(link);
-              track('duel_invite_shared', { native: shared });
-              if (!shared && (await copyText(link))) say('Ссылка скопирована');
-            }}
-          >
-            Пригласить
-          </button>
-          <button
-            className="btn btn--secondary btn--block"
-            onClick={async () => {
-              track('duel_invite_copied', {});
-              say((await copyText(link)) ? 'Ссылка скопирована' : link);
-            }}
-          >
-            Скопировать ссылку
-          </button>
+          {link && (
+            <>
+              <button
+                className="btn btn--primary btn--hero"
+                disabled={offline}
+                onClick={async () => {
+                  const shared = await platform.share(link);
+                  track('duel_invite_shared', { native: shared });
+                  if (!shared && (await platform.copy(link))) say('Ссылка скопирована');
+                }}
+              >
+                Пригласить
+              </button>
+              <button
+                className="btn btn--secondary btn--block"
+                onClick={async () => {
+                  track('duel_invite_copied', {});
+                  say((await platform.copy(link)) ? 'Ссылка скопирована' : link);
+                }}
+              >
+                Скопировать ссылку
+              </button>
+            </>
+          )}
           <PasteInvite
             ownRoom={room.room_id}
             ownCode={room.code}

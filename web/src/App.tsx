@@ -8,7 +8,8 @@ import { track } from './game/analytics';
 import { botName } from './game/opponents';
 import { completedMatches, storage, type ArchiveLoad } from './game/storage';
 import { useGame } from './game/useGame';
-import { PVP_URL, activeRoom, clearRoomFromLocation, devUserId, inVk, parseRoom, roomFromLocation } from './pvp/config';
+import { PVP_URL, activeRoom, devUserId } from './pvp/config';
+import { platform } from './platform';
 import { useDuel } from './pvp/useDuel';
 import { Duel } from './screens/Duel';
 import { History } from './screens/History';
@@ -19,7 +20,6 @@ import { Rules } from './screens/Rules';
 import { Stats, matchDate, matchLabel } from './screens/Stats';
 import { EngineError, SaveError } from './screens/SaveError';
 import { Table } from './screens/Table';
-import { onVkLocation } from './vk';
 
 type Screen =
   | { name: 'loading' }
@@ -62,9 +62,10 @@ export function App() {
         });
         // An invite link opens its room directly; a saved Solo match stays as it is.
         // A reload during a duel returns to it, like an invite to one's own room.
-        const invite = roomFromLocation() ?? activeRoom.get();
+        const launched = platform.launchRoom();
+        const invite = launched ?? activeRoom.get();
         if (invite && PVP_URL) {
-          track('duel_opened', { source: roomFromLocation() ? 'invite' : 'resume' });
+          track('duel_opened', { source: launched ? 'invite' : 'resume' });
           return setScreen({ name: 'duel', invite });
         }
         if (saved.kind === 'corrupt') return setScreen({ name: 'save_error', code: 'corrupt_save' });
@@ -114,10 +115,7 @@ export function App() {
 
   useEffect(
     () =>
-      onVkLocation((location) => {
-        const id = parseRoom(location);
-        if (id) openInvite(id);
-      }),
+      platform.onInvite(openInvite),
     [openInvite],
   );
 
@@ -244,8 +242,8 @@ export function App() {
           onRules={() => setRulesOpen(true)}
           onStats={openStats}
           onDuel={
-            // Hosting needs a VK sign-in; outside VK one can only join by code.
-            PVP_URL && (inVk() || devUserId() !== null)
+            // Hosting needs a messenger sign-in; guests can only join by code.
+            PVP_URL && (platform.canHost || devUserId() !== null)
               ? () => {
                   track('duel_opened', { source: 'home' });
                   setScreen({ name: 'duel', invite: null });
@@ -312,7 +310,7 @@ export function App() {
           onOpenInvite={openInvite}
           onRules={() => setRulesOpen(true)}
           onExit={() => {
-            clearRoomFromLocation();
+            platform.clearLaunchRoom();
             duel.reset();
             setScreen({ name: 'home' });
           }}

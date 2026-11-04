@@ -4,6 +4,7 @@
 //! A room is written after every change, so a restart or deploy resumes
 //! every match from its last accepted action.
 
+use crate::player::PlayerId;
 use crate::room::{Room, Score, Status};
 use poker_core::MatchOutcome;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -97,10 +98,11 @@ impl Store {
 
     pub fn record_duel(
         &self,
-        host: u64,
-        guest: u64,
+        host: PlayerId,
+        guest: PlayerId,
         outcome_for_host: MatchOutcome,
     ) -> rusqlite::Result<()> {
+        let (host, guest) = (host.raw(), guest.raw());
         // Pairs are stored once, smaller id first.
         let (a, b, a_won) = if host < guest {
             (host, guest, outcome_for_host == MatchOutcome::Win)
@@ -124,7 +126,8 @@ impl Store {
     }
 
     /// Score between `host` and `guest`, from the host's side.
-    pub fn head_to_head(&self, host: u64, guest: u64) -> rusqlite::Result<Score> {
+    pub fn head_to_head(&self, host: PlayerId, guest: PlayerId) -> rusqlite::Result<Score> {
+        let (host, guest) = (host.raw(), guest.raw());
         let (a, b) = (host.min(guest), host.max(guest));
         let row: Option<(i64, i64, i64)> = self
             .conn
@@ -153,11 +156,15 @@ mod tests {
     use super::*;
     use crate::room::Profile;
 
+    fn pid(id: u64) -> PlayerId {
+        PlayerId::vk(id).unwrap()
+    }
+
     #[test]
     fn rooms_round_trip_and_scores_are_symmetric() {
         let s = Store::open(":memory:").unwrap();
         let p = Profile {
-            vk_id: 5,
+            id: pid(5),
             name: "A".into(),
             photo: None,
         };
@@ -166,12 +173,12 @@ mod tests {
         assert_eq!(s.open_rooms().unwrap(), vec![room.clone()]);
         assert_eq!(s.room("r1").unwrap(), Some(room));
 
-        s.record_duel(9, 5, MatchOutcome::Win).unwrap(); // 9 beat 5
-        s.record_duel(5, 9, MatchOutcome::Draw).unwrap();
-        s.record_duel(5, 9, MatchOutcome::Win).unwrap(); // 5 beat 9
-        s.record_duel(5, 9, MatchOutcome::Win).unwrap();
+        s.record_duel(pid(9), pid(5), MatchOutcome::Win).unwrap(); // 9 beat 5
+        s.record_duel(pid(5), pid(9), MatchOutcome::Draw).unwrap();
+        s.record_duel(pid(5), pid(9), MatchOutcome::Win).unwrap(); // 5 beat 9
+        s.record_duel(pid(5), pid(9), MatchOutcome::Win).unwrap();
         assert_eq!(
-            s.head_to_head(5, 9).unwrap(),
+            s.head_to_head(pid(5), pid(9)).unwrap(),
             Score {
                 host: 2,
                 guest: 1,
@@ -179,13 +186,13 @@ mod tests {
             }
         );
         assert_eq!(
-            s.head_to_head(9, 5).unwrap(),
+            s.head_to_head(pid(9), pid(5)).unwrap(),
             Score {
                 host: 1,
                 guest: 2,
                 draws: 1
             }
         );
-        assert_eq!(s.head_to_head(1, 2).unwrap(), Score::default());
+        assert_eq!(s.head_to_head(pid(1), pid(2)).unwrap(), Score::default());
     }
 }

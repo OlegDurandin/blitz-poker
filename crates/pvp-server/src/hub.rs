@@ -8,6 +8,7 @@
 use crate::auth::Sessions;
 use crate::config::Config;
 use crate::ids;
+use crate::player::PlayerId;
 use crate::protocol::{
     ClientMsg, Envelope, MAX_ID_LEN, Outbound, PROTOCOL_VERSION, PublicUser, ServerMsg,
 };
@@ -106,9 +107,9 @@ struct State {
     rooms: HashMap<String, Room>,
     conns: HashMap<u64, Conn>,
     /// The one live connection per VK user.
-    by_user: HashMap<u64, u64>,
+    by_user: HashMap<PlayerId, u64>,
     /// (user, request_id) → room id, for idempotent `create_room`.
-    create_requests: HashMap<(u64, String), String>,
+    create_requests: HashMap<(PlayerId, String), String>,
     /// Wrong room codes per user (`u:<id>`) and per network (`n:<net>`).
     code_misses: Windows,
     /// Guest sign-ins per network, and the server-wide minute (`*`).
@@ -144,12 +145,7 @@ impl Hub {
         }
         let create_requests = rooms
             .values()
-            .map(|r| {
-                (
-                    (r.host.profile.vk_id, r.create_request.clone()),
-                    r.id.clone(),
-                )
-            })
+            .map(|r| ((r.host.profile.id, r.create_request.clone()), r.id.clone()))
             .collect();
         Hub {
             config,
@@ -230,10 +226,10 @@ impl Hub {
         let mut st = self.lock();
         let id = st.next_conn;
         st.next_conn += 1;
-        let vk = profile.vk_id;
+        let player = profile.id;
         if let Some(old) = st
             .by_user
-            .insert(vk, id)
+            .insert(player, id)
             .and_then(|old| st.conns.remove(&old))
         {
             self.send(
@@ -270,15 +266,15 @@ impl Hub {
         let ids: Vec<String> = st
             .rooms
             .values()
-            .filter(|r| r.is_open() && r.slot_of(vk).is_some())
+            .filter(|r| r.is_open() && r.slot_of(player).is_some())
             .map(|r| r.id.clone())
             .collect();
         for room_id in ids {
             let room = st.rooms.get_mut(&room_id).expect("room");
             let was_away = room
                 .members()
-                .any(|m| m.profile.vk_id == vk && !m.connected);
-            room.set_connected(vk, true, &self.config.timings, now);
+                .any(|m| m.profile.id == player && !m.connected);
+            room.set_connected(player, true, &self.config.timings, now);
             if was_away {
                 self.metrics.reconnects.fetch_add(1, Ordering::Relaxed);
             }
@@ -293,20 +289,20 @@ impl Hub {
         let Some(conn) = st.conns.remove(&conn_id) else {
             return;
         };
-        let vk = conn.profile.vk_id;
-        if st.by_user.get(&vk) != Some(&conn_id) {
+        let player = conn.profile.id;
+        if st.by_user.get(&player) != Some(&conn_id) {
             return; // replaced by a newer connection, which keeps the seat
         }
-        st.by_user.remove(&vk);
+        st.by_user.remove(&player);
         let ids: Vec<String> = st
             .rooms
             .values()
-            .filter(|r| r.is_open() && r.slot_of(vk).is_some())
+            .filter(|r| r.is_open() && r.slot_of(player).is_some())
             .map(|r| r.id.clone())
             .collect();
         for room_id in ids {
             st.rooms.get_mut(&room_id).expect("room").set_connected(
-                vk,
+                player,
                 false,
                 &self.config.timings,
                 now,
@@ -359,7 +355,7 @@ impl Hub {
                 error(None, "bad_request", "Не удалось разобрать сообщение"),
             );
         }
-        let vk = profile.vk_id;
+        let player = profile.id;
         let timings = self.config.timings;
         let mut dealer = OsDealer;
 
@@ -373,7 +369,7 @@ impl Hub {
                 );
                 Ok(None)
             }
-            ClientMsg::CreateRoom { .. } if crate::room::is_guest(vk) => {
+            ClientMsg::CreateRoom { .. } if player.is_guest() => {
                 reply(
                     &st,
                     error(
@@ -385,7 +381,11 @@ impl Hub {
                 Ok(None)
             }
             ClientMsg::CreateRoom { request_id } => {
-                if let Some(id) = st.create_requests.get(&(vk, request_id.clone())).cloned() {
+                if let Some(id) = st
+                    .create_requests
+                    .get(&(player, request_id.clone()))
+                    .cloned()
+                {
                     reply(
                         &st,
                         ServerMsg::RoomCreated {
@@ -403,7 +403,7 @@ impl Hub {
                         .rooms
                         .values()
                         .filter(|r| {
-                            r.host.profile.vk_id == vk
+                            r.host.profile.id == player
                                 && matches!(r.status, Status::Waiting | Status::Ready)
                         })
                         .map(|r| (r.status == Status::Ready, r.created_ms, r.id.clone()))
@@ -412,15 +412,15 @@ impl Hub {
                     let reuse = open.pop().map(|(_, _, id)| id);
                     let waiting = open.into_iter().filter(|(ready, _, _)| !ready);
                     for (_, _, id) in waiting {
-                        let _ = st.rooms.get_mut(&id).expect("room").leave(vk, now);
+                        let _ = st.rooms.get_mut(&id).expect("room").leave(player, now);
                         self.commit(&mut st, &id, now);
                     }
                     if let Some(id) = reuse {
                         let room = st.rooms.get_mut(&id).expect("room");
                         room.activity_ms = now;
-                        room.set_connected(vk, true, &timings, now);
+                        room.set_connected(player, true, &timings, now);
                         st.create_requests
-                            .insert((vk, request_id.clone()), id.clone());
+                            .insert((player, request_id.clone()), id.clone());
                         tracing::info!(room = %ids::log_tag(&id), "room reused");
                         reply(
                             &st,
@@ -435,7 +435,7 @@ impl Hub {
                     let hosted = st
                         .rooms
                         .values()
-                        .filter(|r| r.host.profile.vk_id == vk && r.status == Status::Ready)
+                        .filter(|r| r.host.profile.id == player && r.status == Status::Ready)
                         .count();
                     if hosted >= MAX_HOSTED_ROOMS {
                         Err((None, RoomError::TooManyRooms))
@@ -455,7 +455,7 @@ impl Hub {
                             Room::new(id.clone(), profile.clone(), request_id.clone(), now),
                         );
                         st.create_requests
-                            .insert((vk, request_id.clone()), id.clone());
+                            .insert((player, request_id.clone()), id.clone());
                         self.metrics.rooms_created.fetch_add(1, Ordering::Relaxed);
                         tracing::info!(room = %ids::log_tag(&id), "room created");
                         reply(
@@ -471,7 +471,7 @@ impl Hub {
                 }
             }
             ClientMsg::FindRoom { code } => {
-                let keys = [format!("u:{vk}"), format!("n:{client}")];
+                let keys = [format!("u:{player}"), format!("n:{client}")];
                 if keys
                     .iter()
                     .any(|k| st.code_misses.count(k, now, CODE_MISSES_WINDOW_MS) >= CODE_MISSES_MAX)
@@ -493,7 +493,7 @@ impl Hub {
                 });
                 match found {
                     Some(room) => {
-                        let preview = room.preview(vk);
+                        let preview = room.preview(player);
                         tracing::info!(
                             room = %ids::log_tag(&room.id),
                             own = preview.already_member,
@@ -522,7 +522,7 @@ impl Hub {
             }
             ClientMsg::PeekRoom { room_id } => match self.find(&mut st, &room_id) {
                 Some(room) => {
-                    let preview = room.preview(vk);
+                    let preview = room.preview(player);
                     tracing::info!(
                         room = %ids::log_tag(&room_id),
                         status = ?room.status,
@@ -548,23 +548,23 @@ impl Hub {
                     self.metrics
                         .wait_for_friend_count
                         .fetch_add(1, Ordering::Relaxed);
-                    let host = room.host.profile.vk_id;
-                    match st.store.head_to_head(host, vk) {
+                    let host = room.host.profile.id;
+                    match st.store.head_to_head(host, player) {
                         Ok(score) => room.score = score,
                         Err(e) => tracing::error!("head-to-head: {e}"),
                     }
                 }
-                room.set_connected(vk, true, &timings, now);
+                room.set_connected(player, true, &timings, now);
                 tracing::info!(room = %ids::log_tag(&room.id), ?slot, "joined");
                 Ok(())
             }),
             ClientMsg::LeaveRoom { room_id } => {
-                self.with_room(&mut st, &room_id, |room, _| room.leave(vk, now))
+                self.with_room(&mut st, &room_id, |room, _| room.leave(player, now))
             }
             ClientMsg::SetReady { room_id, ready } => {
                 self.with_room(&mut st, &room_id, |room, _| {
                     let before = room.status;
-                    room.set_ready(vk, ready, &mut dealer, now)?;
+                    room.set_ready(player, ready, &mut dealer, now)?;
                     if before == Status::Ready && room.status == Status::Playing {
                         self.metrics.matches_started.fetch_add(1, Ordering::Relaxed);
                     }
@@ -584,7 +584,7 @@ impl Hub {
                     .ok_or(RoomError::NotFound)
                     .and_then(|room| {
                         room.action(
-                            vk,
+                            player,
                             &match_id,
                             &action_id,
                             expected_state_version,
@@ -637,7 +637,7 @@ impl Hub {
                 }
             }
             ClientMsg::RequestSnapshot { room_id } => match st.rooms.get(&room_id) {
-                Some(room) if room.slot_of(vk).is_some() => {
+                Some(room) if room.slot_of(player).is_some() => {
                     if let Some(c) = st.conns.get(&conn_id) {
                         self.send_snapshot(&st, c, &room_id, now);
                     }
@@ -648,17 +648,19 @@ impl Hub {
             },
             ClientMsg::RequestRematch { room_id } => {
                 self.with_room(&mut st, &room_id, |room, _| {
-                    room.request_rematch(vk, &mut dealer, now)
+                    room.request_rematch(player, &mut dealer, now)
                 })
             }
             ClientMsg::AcceptRematch { room_id } => self.with_room(&mut st, &room_id, |room, _| {
-                room.accept_rematch(vk, &mut dealer, now)
+                room.accept_rematch(player, &mut dealer, now)
             }),
             ClientMsg::DeclineRematch { room_id } => {
-                self.with_room(&mut st, &room_id, |room, _| room.decline_rematch(vk, now))
+                self.with_room(&mut st, &room_id, |room, _| {
+                    room.decline_rematch(player, now)
+                })
             }
             ClientMsg::Surrender { room_id } => {
-                self.with_room(&mut st, &room_id, |room, _| room.surrender(vk, now))
+                self.with_room(&mut st, &room_id, |room, _| room.surrender(player, now))
             }
         };
 
@@ -734,7 +736,7 @@ impl Hub {
         for m in room.members() {
             if let Some(c) = st
                 .by_user
-                .get(&m.profile.vk_id)
+                .get(&m.profile.id)
                 .and_then(|id| st.conns.get(id))
             {
                 self.send_snapshot(st, c, room_id, now);
@@ -746,7 +748,7 @@ impl Hub {
         let Some(view) = st
             .rooms
             .get(room_id)
-            .and_then(|r| r.view_for(conn.profile.vk_id, &self.config.timings))
+            .and_then(|r| r.view_for(conn.profile.id, &self.config.timings))
         else {
             return;
         };

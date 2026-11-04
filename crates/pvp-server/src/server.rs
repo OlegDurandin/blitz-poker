@@ -7,8 +7,9 @@
 
 use crate::auth::{clean_name, clean_photo};
 use crate::hub::{Hub, Outgoing, now_ms};
+use crate::player::PlayerId;
 use crate::room::Profile;
-use crate::vk;
+use crate::{telegram, vk};
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -49,10 +50,13 @@ pub fn router(hub: Arc<Hub>) -> Router {
         .with_state(hub)
 }
 
+/// How a player proves who they are; exactly one proof per request.
 #[derive(Deserialize)]
 struct AuthRequest {
-    /// `window.location.search` of the Mini App, as VK signed it.
+    /// VK: `window.location.search` of the Mini App, as VK signed it.
     launch_params: Option<String>,
+    /// Telegram: `Telegram.WebApp.initData`, signed for the bot.
+    tg_init_data: Option<String>,
     /// Local development only (`PVP_DEV_AUTH=1` on a loopback address).
     dev_user_id: Option<u64>,
     name: Option<String>,
@@ -84,7 +88,7 @@ pub fn client_key(headers: &HeaderMap) -> String {
 }
 
 /// A stable guest id from the browser's key; None for a malformed key.
-fn guest_id(key: &str) -> Option<u64> {
+fn guest_id(key: &str) -> Option<PlayerId> {
     use sha2::{Digest, Sha256};
     let ok = (32..=128).contains(&key.len())
         && key
@@ -94,9 +98,101 @@ fn guest_id(key: &str) -> Option<u64> {
         return None;
     }
     let digest = Sha256::digest(format!("blitz-guest:{key}"));
-    let mut bytes = [0u8; 8];
-    bytes[2..].copy_from_slice(&digest[..6]);
-    Some(crate::room::GUEST_BIT | u64::from_be_bytes(bytes))
+    let mut bytes = [0u8; 6];
+    bytes.copy_from_slice(&digest[..6]);
+    Some(PlayerId::guest(bytes))
+}
+
+/// A verified player, with what their platform vouches for.
+struct Identity {
+    id: PlayerId,
+    /// Signed by the platform (Telegram); otherwise the client's text is used.
+    name: Option<String>,
+    photo: Option<String>,
+}
+
+fn unauthorized(hub: &Hub, message: &str) -> Box<Response> {
+    hub.metrics.auth_failures.fetch_add(1, Ordering::Relaxed);
+    Box::new(reject(
+        StatusCode::UNAUTHORIZED,
+        "bad_launch_params",
+        message,
+    ))
+}
+
+/// Checks the one proof in `req` against its platform.
+/// The error is the response to send (boxed: responses are large).
+fn identify(hub: &Hub, headers: &HeaderMap, req: &AuthRequest) -> Result<Identity, Box<Response>> {
+    let cfg = &hub.config;
+    let now_s = now_ms() / 1000;
+    let plain = |id| Identity {
+        id,
+        name: None,
+        photo: None,
+    };
+    if let Some(params) = &req.launch_params {
+        if cfg.app_secret.is_empty() {
+            return Err(unauthorized(hub, "Вход через VK отключён"));
+        }
+        let launch = vk::verify(
+            params,
+            cfg.app_secret.as_bytes(),
+            cfg.app_id,
+            cfg.launch_max_age_secs,
+            now_s,
+        )
+        .map_err(|e| {
+            tracing::warn!("launch params rejected: {e:?}");
+            unauthorized(hub, "Не удалось подтвердить вход через VK")
+        })?;
+        let id = PlayerId::vk(launch.user_id)
+            .ok_or_else(|| unauthorized(hub, "Не удалось подтвердить вход через VK"))?;
+        return Ok(plain(id));
+    }
+    if let Some(init_data) = &req.tg_init_data {
+        let Some(token) = &cfg.tg_bot_token else {
+            return Err(unauthorized(hub, "Вход через Telegram отключён"));
+        };
+        let launch =
+            telegram::verify(init_data, token, cfg.launch_max_age_secs, now_s).map_err(|e| {
+                tracing::warn!("telegram init data rejected: {e:?}");
+                unauthorized(hub, "Не удалось подтвердить вход через Telegram")
+            })?;
+        let id = PlayerId::telegram(launch.user_id)
+            .ok_or_else(|| unauthorized(hub, "Не удалось подтвердить вход через Telegram"))?;
+        return Ok(Identity {
+            id,
+            name: Some(launch.name),
+            photo: launch.photo_url,
+        });
+    }
+    if let Some(dev) = req.dev_user_id {
+        return match PlayerId::vk(dev) {
+            Some(id) if cfg.dev_auth => Ok(plain(id)),
+            _ => Err(unauthorized(hub, "Не удалось подтвердить вход")),
+        };
+    }
+    if let Some(key) = &req.guest_key
+        && cfg.guest_auth
+    {
+        let Some(id) = guest_id(key) else {
+            hub.metrics.auth_failures.fetch_add(1, Ordering::Relaxed);
+            return Err(Box::new(reject(
+                StatusCode::BAD_REQUEST,
+                "bad_guest_key",
+                "Не удалось войти как гость",
+            )));
+        };
+        if !hub.guest_auth_allowed(&client_key(headers)) {
+            return Err(Box::new(reject(
+                StatusCode::TOO_MANY_REQUESTS,
+                "busy",
+                "Слишком много входов, попробуйте через минуту",
+            )));
+        }
+        return Ok(plain(id));
+    }
+    Err(unauthorized(hub, "Откройте игру в VK или Telegram"))
 }
 
 #[derive(Deserialize, Default)]
@@ -150,61 +246,15 @@ async fn auth(
     headers: HeaderMap,
     Json(req): Json<AuthRequest>,
 ) -> Response {
-    let cfg = &hub.config;
-    let vk_id = match (&req.launch_params, req.dev_user_id) {
-        (Some(params), _) => {
-            match vk::verify(
-                params,
-                cfg.app_secret.as_bytes(),
-                cfg.app_id,
-                cfg.launch_max_age_secs,
-                now_ms() / 1000,
-            ) {
-                Ok(launch) => launch.user_id,
-                Err(e) => {
-                    hub.metrics.auth_failures.fetch_add(1, Ordering::Relaxed);
-                    tracing::warn!("launch params rejected: {e:?}");
-                    return reject(
-                        StatusCode::UNAUTHORIZED,
-                        "bad_launch_params",
-                        "Не удалось подтвердить вход через VK",
-                    );
-                }
-            }
-        }
-        (None, Some(id)) if cfg.dev_auth && id > 0 => id,
-        (None, None) if cfg.guest_auth && req.guest_key.is_some() => {
-            let Some(id) = req.guest_key.as_deref().and_then(guest_id) else {
-                hub.metrics.auth_failures.fetch_add(1, Ordering::Relaxed);
-                return reject(
-                    StatusCode::BAD_REQUEST,
-                    "bad_guest_key",
-                    "Не удалось войти как гость",
-                );
-            };
-            if !hub.guest_auth_allowed(&client_key(&headers)) {
-                return reject(
-                    StatusCode::TOO_MANY_REQUESTS,
-                    "busy",
-                    "Слишком много входов, попробуйте через минуту",
-                );
-            }
-            id
-        }
-        _ => {
-            hub.metrics.auth_failures.fetch_add(1, Ordering::Relaxed);
-            return reject(
-                StatusCode::UNAUTHORIZED,
-                "bad_launch_params",
-                "Не удалось подтвердить вход через VK",
-            );
-        }
+    let who = match identify(&hub, &headers, &req) {
+        Ok(who) => who,
+        Err(response) => return *response,
     };
-    let guest = crate::room::is_guest(vk_id);
-    let name = clean_name(req.name.as_deref().unwrap_or(""));
+    let guest = who.id.is_guest();
+    let name = clean_name(who.name.as_deref().or(req.name.as_deref()).unwrap_or(""));
     let profile = Profile {
-        vk_id,
-        // The host should know who is not signed in through VK.
+        id: who.id,
+        // The host should know who is not signed in through a messenger.
         name: if guest {
             format!("{name} (гость)")
         } else {
@@ -213,14 +263,14 @@ async fn auth(
         photo: if guest {
             None
         } else {
-            clean_photo(req.photo.as_deref())
+            clean_photo(who.photo.as_deref().or(req.photo.as_deref()))
         },
     };
     let entry = req.entry.unwrap_or_default();
     let params = req.launch_params.as_deref().unwrap_or("");
     tracing::info!(
-        user = %user_tag(vk_id),
-        guest,
+        user = %user_tag(who.id),
+        via = who.id.platform().as_str(),
         build = %log_safe(entry.build.as_deref()),
         platform = %log_safe(Some(launch_param(params, "vk_platform"))),
         vk_ref = %log_safe(Some(launch_param(params, "vk_ref"))),
@@ -340,9 +390,9 @@ async fn session(hub: Arc<Hub>, profile: Profile, client: String, socket: WebSoc
 }
 
 /// Tells users apart in logs without logging VK ids.
-fn user_tag(vk_id: u64) -> String {
+fn user_tag(id: PlayerId) -> String {
     use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(format!("blitz-log:{vk_id}"));
+    let digest = Sha256::digest(format!("blitz-log:{}", id.raw()));
     digest[..3].iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -365,7 +415,10 @@ mod log_tests {
             ),
             "mobile_iphone"
         );
-        assert_ne!(user_tag(1), user_tag(2));
+        assert_ne!(
+            user_tag(PlayerId::vk(1).unwrap()),
+            user_tag(PlayerId::vk(2).unwrap())
+        );
     }
 
     #[test]
@@ -385,8 +438,7 @@ mod log_tests {
         let key = "k".repeat(43);
         let id = guest_id(&key).unwrap();
         assert_eq!(guest_id(&key), Some(id));
-        assert!(crate::room::is_guest(id));
-        assert!(!crate::room::is_guest(9_999_999_999));
+        assert!(id.is_guest());
         assert_ne!(guest_id(&"j".repeat(43)), Some(id));
         assert_eq!(guest_id("short"), None);
         assert_eq!(guest_id(&format!("{}!", "k".repeat(40))), None);

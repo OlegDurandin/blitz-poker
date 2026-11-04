@@ -79,7 +79,7 @@ mod tests {
     fn tickets_are_single_use_and_expire() {
         let mut s = Sessions::default();
         let p = Profile {
-            vk_id: 1,
+            id: crate::player::PlayerId::from_raw(1),
             name: "A".into(),
             photo: None,
         };
