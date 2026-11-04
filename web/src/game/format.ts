@@ -75,7 +75,7 @@ export function describeHand(h: Pick<ShownHand, 'category' | 'best'>): string {
     case 'two_pair':
       return `две пары: ${NOM_PL[r[0]]} и ${NOM_PL[r[2]]}`;
     case 'three_of_a_kind':
-      return `тройка: ${NOM_PL[r[0]]}`;
+      return `три ${GEN[r[0]]}`;
     case 'straight':
       return `стрит до ${GEN[r[0]]}`;
     case 'flush':
@@ -83,7 +83,7 @@ export function describeHand(h: Pick<ShownHand, 'category' | 'best'>): string {
     case 'full_house':
       return `фулл-хаус: ${NOM_PL[r[0]]} и ${NOM_PL[r[3]]}`;
     case 'four_of_a_kind':
-      return `каре: ${NOM_PL[r[0]]}`;
+      return `каре ${GEN_PL[r[0]]}`;
     case 'straight_flush':
       return `стрит-флеш до ${GEN[r[0]]}`;
     case 'royal_flush':
@@ -119,6 +119,26 @@ export function kickerNote(mine: ShownHand, theirs: ShownHand): string | null {
   return null;
 }
 
+
+/**
+ * For a high card or a flush, where every card counts: the first card that
+ * differs, e.g. "Туз старше короля" or "Решила третья карта: дама против
+ * валета". Null for other combinations or a tie.
+ */
+export function decidingCardNote(w: ShownHand, l: ShownHand): string | null {
+  if (w.category !== l.category || (w.category !== 'high_card' && w.category !== 'flush')) return null;
+  for (let i = 0; i < 5; i++) {
+    const a = rankOf(w.best[i]);
+    const b = rankOf(l.best[i]);
+    if (a === b) continue;
+    const [hi, lo] = a > b ? [a, b] : [b, a];
+    if (i === 0) return `${NOM[hi][0].toUpperCase()}${NOM[hi].slice(1)} старше ${GEN[lo]}`;
+    return `Решила ${ORDINAL[i]} карта: ${NOM[hi]} против ${GEN[lo]}`;
+  }
+  return null;
+}
+
+const ORDINAL = ['первая', 'вторая', 'третья', 'четвёртая', 'пятая'];
 
 export const STREET_NAME: Record<Street, string> = {
   preflop: 'Префлоп',

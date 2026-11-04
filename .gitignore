@@ -10,3 +10,10 @@ node_modules/
 .env
 .env.*
 !.env.example
+# Публичный адрес сервера дуэлей для сборки клиента, секретов нет.
+!web/.env.production
+
+# PvP server database (local runs)
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

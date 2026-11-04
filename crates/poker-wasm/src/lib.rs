@@ -96,6 +96,10 @@ struct ReplayResponse {
 
 /// Brings an older compatible snapshot up to date, then checks it.
 fn load(state: &mut Match) -> Result<(), EngineError> {
+    // Duels are run by the PvP server only; a client never holds one.
+    if state.kind == MatchKind::Duel {
+        return Err(EngineError::CorruptSave("duels are played on the server"));
+    }
     state.upgrade();
     state.validate()
 }
@@ -122,6 +126,7 @@ fn run(request: Request) -> Result<(Match, Option<PlayerAction>), EngineError> {
             let personality = match state.kind {
                 MatchKind::Standard => Personality::Standard(state.opponent),
                 MatchKind::Tutorial => Personality::Tutorial,
+                MatchKind::Duel => unreachable!("rejected by load"),
             };
             let action = bot::decide(&state.view(Seat::Bot), personality, state.decision_seed());
             state.apply(Seat::Bot, action)?;

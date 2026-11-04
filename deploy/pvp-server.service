@@ -1,0 +1,29 @@
+# systemd unit for the Blitz Poker duel server.
+# Install: copy the binary to /opt/blitz-pvp/pvp-server, the env file to
+# /etc/blitz-pvp.env (see crates/pvp-server/.env.example), then
+#   sudo cp deploy/pvp-server.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now pvp-server
+[Unit]
+Description=Blitz Poker duel server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/etc/blitz-pvp.env
+ExecStart=/opt/blitz-pvp/pvp-server
+WorkingDirectory=/var/lib/blitz-pvp
+StateDirectory=blitz-pvp
+DynamicUser=yes
+Restart=on-failure
+RestartSec=2
+# SIGTERM: the server stops accepting connections; every room is already
+# saved after each change, so matches resume after the restart.
+KillSignal=SIGTERM
+TimeoutStopSec=10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

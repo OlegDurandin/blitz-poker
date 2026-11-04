@@ -22,6 +22,21 @@ pub const HANDS_PER_MATCH: u8 = 8;
 const DEALT_CARDS: usize = 9;
 const TUTORIAL_DECK: &str = "As Qd Kc 9c Ad 7h 2c 5s Kh";
 
+/// The first nine cards of an externally shuffled deck, all distinct.
+fn checked_deal(deck: &[Card]) -> Result<Vec<Card>, EngineError> {
+    if deck.len() < DEALT_CARDS {
+        return Err(EngineError::CorruptSave("deck size"));
+    }
+    let deal = deck[..DEALT_CARDS].to_vec();
+    let mut seen = [false; 52];
+    for c in &deal {
+        if std::mem::replace(&mut seen[c.index()], true) {
+            return Err(EngineError::CorruptSave("duplicate card"));
+        }
+    }
+    Ok(deal)
+}
+
 /// Blinds (small, big) for a 1-based hand number.
 pub fn blinds(hand_number: u8) -> (u32, u32) {
     match hand_number {
@@ -88,6 +103,9 @@ pub enum MatchKind {
     Standard,
     /// One deterministic, clearly labelled training hand; never counted in stats.
     Tutorial,
+    /// Two people via the PvP server. Seat `Human` is the room host, `Bot`
+    /// the guest; decks come from the server's CSPRNG (see [`Match::duel`]).
+    Duel,
 }
 
 /// Which bot the human plays against. How each one plays lives in the `bot`
@@ -279,6 +297,13 @@ pub struct MatchResult {
     pub ended_early: bool,
     /// Best hand the human made at a showdown during the match.
     pub best_hand: Option<BestShown>,
+    /// Best hand of the other seat (absent before 2.0).
+    #[serde(default)]
+    pub opponent_best_hand: Option<BestShown>,
+    /// The seat that lost by forfeit (timeout, disconnect, surrender) rather
+    /// than by chips. Only duels end this way.
+    #[serde(default)]
+    pub forfeit: Option<Seat>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -373,6 +398,8 @@ pub struct Match {
     pub hand: Hand,
     pub history: Vec<HandSummary>,
     best_human: Option<BestShown>,
+    #[serde(default)]
+    best_bot: Option<BestShown>,
     pub result: Option<MatchResult>,
 }
 
@@ -432,6 +459,7 @@ impl Match {
             },
             history: Vec::new(),
             best_human: None,
+            best_bot: None,
             result: None,
         }
     }
@@ -440,6 +468,7 @@ impl Match {
         match self.kind {
             MatchKind::Standard => HANDS_PER_MATCH,
             MatchKind::Tutorial => 1,
+            MatchKind::Duel => HANDS_PER_MATCH,
         }
     }
 
@@ -588,13 +617,17 @@ impl Match {
                 awarded[oop] += pot % 2;
             }
         }
-        let human_best = shown[Seat::Human.idx()];
-        if self.best_human.is_none_or(|b| human_best.value > b.value) {
-            self.best_human = Some(BestShown {
-                category: human_best.category(),
-                cards: human_best.cards,
-                value: human_best.value,
-            });
+        for (best, made) in [&mut self.best_human, &mut self.best_bot]
+            .into_iter()
+            .zip(shown)
+        {
+            if best.is_none_or(|b| made.value > b.value) {
+                *best = Some(BestShown {
+                    category: made.category(),
+                    cards: made.cards,
+                    value: made.value,
+                });
+            }
         }
         let show = |seat: Seat, b: &BestHand| ShownHand {
             hole: self.hand.hole(seat),
@@ -777,17 +810,67 @@ impl Match {
         if self.phase != Phase::HandOver {
             return Err(EngineError::WrongPhase);
         }
-        if self.is_final_hand() {
-            self.finish_match();
-        } else {
-            let number = self.hand.number + 1;
-            let button = self.hand.button.other();
-            self.start_hand(number, button, None);
+        if self.kind == MatchKind::Duel && !self.is_final_hand() {
+            // Duel decks must come from the server's CSPRNG, not the seeded RNG.
+            return Err(EngineError::IllegalAction);
         }
+        self.advance(None);
         Ok(())
     }
 
-    fn finish_match(&mut self) {
+    /// Duel version of [`Match::next_hand`]: the next hand is dealt from
+    /// `deck` (the server's shuffle; only the first nine cards are used).
+    pub fn next_hand_dealt(&mut self, deck: &[Card]) -> Result<(), EngineError> {
+        if self.phase != Phase::HandOver {
+            return Err(EngineError::WrongPhase);
+        }
+        self.advance(Some(checked_deal(deck)?));
+        Ok(())
+    }
+
+    fn advance(&mut self, deck: Option<Vec<Card>>) {
+        if self.is_final_hand() {
+            self.finish_match(None);
+        } else {
+            let number = self.hand.number + 1;
+            let button = self.hand.button.other();
+            self.start_hand(number, button, deck);
+        }
+    }
+
+    /// A two-person match. The server picks the first button and shuffles
+    /// every deck with a CSPRNG; the engine never deals from its own RNG.
+    pub fn duel(id: String, button: Seat, deck: &[Card]) -> Result<Match, EngineError> {
+        let deal = checked_deal(deck)?;
+        let mut m = Match::empty(id, MatchKind::Duel, Rng::new(0));
+        m.start_hand(1, button, Some(deal));
+        Ok(m)
+    }
+
+    /// Ends the match at once with `loser` losing regardless of chips:
+    /// a timeout, a dropped connection or "Сдаться". The hand in progress
+    /// is abandoned as is; nobody is shown any hidden card.
+    pub fn forfeit(&mut self, loser: Seat) -> Result<(), EngineError> {
+        if self.phase == Phase::MatchOver {
+            return Err(EngineError::WrongPhase);
+        }
+        self.hand.to_act = None;
+        self.finish_match(Some(loser));
+        Ok(())
+    }
+
+    /// What a player who ran out of time does: check if free, else fold.
+    pub fn timeout_action(&self, seat: Seat) -> Option<PlayerAction> {
+        self.legal_actions(seat).map(|l| {
+            if l.check {
+                PlayerAction::Check
+            } else {
+                PlayerAction::Fold
+            }
+        })
+    }
+
+    fn finish_match(&mut self, forfeit: Option<Seat>) {
         let [human, bot] = self.stacks;
         let mut hands_won = [0u8; 2];
         for h in &self.history {
@@ -795,17 +878,24 @@ impl Match {
                 hands_won[w.idx()] += 1;
             }
         }
+        let outcome = match (forfeit, human.cmp(&bot)) {
+            (Some(Seat::Human), _) => MatchOutcome::Loss,
+            (Some(Seat::Bot), _) => MatchOutcome::Win,
+            (None, std::cmp::Ordering::Greater) => MatchOutcome::Win,
+            (None, std::cmp::Ordering::Less) => MatchOutcome::Loss,
+            (None, std::cmp::Ordering::Equal) => MatchOutcome::Draw,
+        };
+        // A forfeit can come mid-hand: report how many hands were finished.
+        let hands_played = self.history.len() as u8;
         self.result = Some(MatchResult {
-            outcome: match human.cmp(&bot) {
-                std::cmp::Ordering::Greater => MatchOutcome::Win,
-                std::cmp::Ordering::Less => MatchOutcome::Loss,
-                std::cmp::Ordering::Equal => MatchOutcome::Draw,
-            },
+            outcome,
             final_stacks: self.stacks,
-            hands_played: self.hand.number,
+            hands_played,
             hands_won,
-            ended_early: self.hand.number < self.hands_total(),
+            ended_early: hands_played < self.hands_total() || forfeit.is_some(),
             best_hand: self.best_human,
+            opponent_best_hand: self.best_bot,
+            forfeit,
         });
         self.phase = Phase::MatchOver;
     }

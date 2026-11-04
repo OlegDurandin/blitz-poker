@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/poker-core", "crates/bot", "crates/poker-wasm"]
+members = ["crates/poker-core", "crates/bot", "crates/poker-wasm", "crates/pvp-server"]
 
 [workspace.package]
 version = "0.1.0"

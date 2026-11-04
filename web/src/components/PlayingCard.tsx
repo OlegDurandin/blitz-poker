@@ -8,7 +8,7 @@ interface Props {
   /** Face down (opponent) or an empty board slot when `card` is absent. */
   faceDown?: boolean;
   size?: CardSize;
-  /** Part of the human's / bot's best five at showdown. */
+  /** Part of my / the opponent's best five at showdown (cyan / amber marks). */
   bestMine?: boolean;
   bestTheirs?: boolean;
   dim?: boolean;
@@ -33,7 +33,7 @@ export function PlayingCard({ card, faceDown, size = 'md', bestMine, bestTheirs,
     .join(' ');
   let label = cardName(card);
   if (bestMine) label += ', в вашей комбинации';
-  if (bestTheirs) label += ', в комбинации бота';
+  if (bestTheirs) label += ', в комбинации соперника';
   const suit = SUIT_SYMBOL[suitOf(card)];
   return (
     <div className={classes} role="img" aria-label={label}>
@@ -46,7 +46,8 @@ export function PlayingCard({ card, faceDown, size = 'md', bestMine, bestTheirs,
       <span className="card__suit" aria-hidden="true">
         {suit}
       </span>
-      {bestTheirs && <span className="card__marker" aria-hidden="true" />}
+      {bestMine && <span className="card__mark card__mark--mine" aria-hidden="true" />}
+      {bestTheirs && <span className="card__mark card__mark--theirs" aria-hidden="true" />}
     </div>
   );
 }
