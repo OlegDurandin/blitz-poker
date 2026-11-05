@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1120px; height: 630px; overflow: hidden; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif;
+    color: #fff;
+    background:
+      radial-gradient(900px 600px at 82% 55%, #1b3a5e 0%, rgba(16,24,39,0) 60%),
+      radial-gradient(600px 400px at 0% 0%, #172a46 0%, rgba(16,24,39,0) 70%),
+      #101827;
+    position: relative;
+  }
+
+  /* Felt table on the right, bleeding off the edge */
+  .felt {
+    position: absolute;
+    left: 560px; top: 70px;
+    width: 720px; height: 490px;
+    border-radius: 50%;
+    background: radial-gradient(ellipse at 40% 40%, #1a7d5e 0%, #14684e 45%, #0e4d3a 100%);
+    box-shadow: 0 0 0 14px #0b3a2c, 0 0 0 16px #2a4560, 0 30px 80px rgba(0,0,0,.55), inset 0 0 60px rgba(0,0,0,.35);
+  }
+
+  .card {
+    position: absolute;
+    width: 150px; height: 210px;
+    border-radius: 16px;
+    background: #f8fafc;
+    box-shadow: 0 14px 30px rgba(0,0,0,.45), 0 2px 4px rgba(0,0,0,.3);
+    font-weight: 800;
+  }
+  .card .rank { position: absolute; left: 16px; top: 10px; font-size: 54px; line-height: 1; letter-spacing: -1px; }
+  .card .suit-s { position: absolute; left: 20px; top: 66px; font-size: 34px; line-height: 1; }
+  .card .suit-l { position: absolute; right: 14px; bottom: 6px; font-size: 92px; line-height: 1; }
+  .red { color: #b42318; }
+  .black { color: #101827; }
+
+  .c1 { left: 640px; top: 190px; transform: rotate(-14deg); }
+  .c2 { left: 770px; top: 168px; transform: rotate(7deg); }
+  .board { position: absolute; width: 92px; height: 129px; border-radius: 11px; background: #f8fafc; box-shadow: 0 8px 18px rgba(0,0,0,.4); font-weight: 800; }
+  .board .rank { position: absolute; left: 10px; top: 6px; font-size: 34px; line-height: 1; }
+  .board .suit-l { position: absolute; right: 9px; bottom: 4px; font-size: 56px; line-height: 1; }
+  .b1 { left: 930px; top: 150px; transform: rotate(4deg); }
+  .b2 { left: 960px; top: 300px; transform: rotate(-6deg); }
+
+  /* Chip stacks */
+  .chips { position: absolute; }
+  .chip {
+    position: absolute;
+    width: 74px; height: 22px;
+    border-radius: 50%;
+    background: var(--c);
+    box-shadow: inset 0 -5px 0 rgba(0,0,0,.25), 0 3px 6px rgba(0,0,0,.35);
+    border: 3px dashed rgba(255,255,255,.75);
+  }
+  .s1 { left: 690px; top: 440px; }
+  .s2 { left: 790px; top: 462px; }
+
+  /* Copy on the left */
+  .copy { position: absolute; left: 80px; top: 120px; width: 470px; }
+  .logo { display: flex; align-items: center; gap: 18px; }
+  .logo svg { width: 92px; height: 92px; flex: none; }
+  .title { font-size: 76px; font-weight: 850; letter-spacing: -2px; line-height: 0.95; }
+  .title span { display: block; color: #6a95ff; }
+  .tag { margin-top: 30px; font-size: 34px; font-weight: 650; line-height: 1.2; color: #e7eef6; }
+  .pills { margin-top: 30px; display: flex; gap: 12px; }
+  .pill {
+    padding: 11px 20px; border-radius: 999px;
+    font-size: 24px; font-weight: 700;
+    background: #213450; color: #fff;
+    box-shadow: inset 0 0 0 2px #2c4262;
+  }
+  .pill--duel { background: #2f5fd6; box-shadow: none; }
+</style>
+</head>
+<body>
+  <div class="felt"></div>
+
+  <div class="chips s1">
+    <div class="chip" style="--c:#2f5fd6; top:44px"></div>
+    <div class="chip" style="--c:#2f5fd6; top:32px"></div>
+    <div class="chip" style="--c:#f5b83d; top:20px"></div>
+    <div class="chip" style="--c:#f5b83d; top:8px"></div>
+    <div class="chip" style="--c:#b42318; top:-4px"></div>
+  </div>
+  <div class="chips s2">
+    <div class="chip" style="--c:#f5b83d; top:34px"></div>
+    <div class="chip" style="--c:#2f5fd6; top:22px"></div>
+    <div class="chip" style="--c:#35d69a; top:10px"></div>
+  </div>
+
+  <div class="board b1"><div class="rank black">K</div><div class="suit-l black">♠</div></div>
+  <div class="board b2"><div class="rank red">Q</div><div class="suit-l red">♦</div></div>
+
+  <div class="card c1"><div class="rank black">A</div><div class="suit-s black">♠</div><div class="suit-l black">♠</div></div>
+  <div class="card c2"><div class="rank red">A</div><div class="suit-s red">♥</div><div class="suit-l red">♥</div></div>
+
+  <div class="copy">
+    <div class="logo">
+      <svg viewBox="0 0 120 120" aria-hidden="true">
+        <defs>
+          <linearGradient id="bolt" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#6A95FF"/>
+            <stop offset="1" stop-color="#2E5BD8"/>
+          </linearGradient>
+        </defs>
+        <path d="M60 10C44 33 20 45 20 67a20 20 0 0 0 33.5 14.8L47 106h26l-6.5-24.2A20 20 0 0 0 100 67C100 45 76 33 60 10Z" fill="#16233A" stroke="#fff" stroke-width="7" stroke-linejoin="round"/>
+        <path d="M67 32 45 68h14l-8 26 23-38H60l7-24Z" fill="url(#bolt)"/>
+      </svg>
+      <div class="title">Blitz<span>Poker</span></div>
+    </div>
+    <p class="tag">Покер за 5 минут:<br>8 быстрых раздач</p>
+    <div class="pills">
+      <span class="pill">Против ИИ</span>
+      <span class="pill pill--duel">Дуэль с другом</span>
+    </div>
+  </div>
+</body>
+</html>
