@@ -44,6 +44,7 @@ function onVkInvite(cb: (roomId: string) => void): () => void {
 
 export const vk: Platform = {
   name: 'vk',
+  label: 'VK',
   canHost: true,
 
   init() {

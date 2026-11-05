@@ -15,6 +15,8 @@ export type AuthProof = { launch_params: string } | { tg_init_data: string };
 
 export interface Platform {
   readonly name: PlatformName;
+  /** For text: "VK", "Telegram"; empty in a plain browser. */
+  readonly label: string;
   /** Signed in through the messenger: may create rooms. Guests only join. */
   readonly canHost: boolean;
   /** Tell the messenger the app is ready (theme, viewport, splash). */

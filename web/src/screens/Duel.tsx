@@ -177,7 +177,7 @@ export function Duel({ duel, inviteRoomId, onOpenInvite, enterCode = false, onEx
 
   if (state.conn === 'failed') {
     return (
-      <Center title="Не удалось войти" text={state.connError ?? 'Попробуйте открыть игру заново из VK.'}>
+      <Center title="Не удалось войти" text={state.connError ?? (platform.label ? `Попробуйте открыть игру заново из ${platform.label}.` : 'Попробуйте открыть игру заново.')}>
         <button className="btn btn--secondary btn--block" onClick={onExit}>
           На главную
         </button>
@@ -212,7 +212,7 @@ export function Duel({ duel, inviteRoomId, onOpenInvite, enterCode = false, onEx
         {isGuest && (
           <div className="duel-paste">
             <label className="duel__hint" htmlFor="guest-name">
-              Вы не в VK: друг увидит это имя
+              Вы вошли без VK и Telegram: друг увидит это имя
             </label>
             <input
               id="guest-name"
@@ -458,7 +458,10 @@ export function Duel({ duel, inviteRoomId, onOpenInvite, enterCode = false, onEx
       {room.status === 'waiting' && room.you_are_host && (
         <section className="duel__invite">
           <p className="duel__text">
-            Отправьте другу ссылку в VK или продиктуйте код: он откроет игру прямо в этой комнате.
+            {link
+              ? `Отправьте другу ссылку в ${platform.label} или продиктуйте код: он откроет игру прямо в этой комнате.`
+              : 'Продиктуйте другу код комнаты: он введёт его в игре.'}{' '}
+            Друг из другого мессенджера входит по коду.
             Комната ждёт 15 минут, «Играть с другом» на главной вернёт вас сюда.
           </p>
           <button

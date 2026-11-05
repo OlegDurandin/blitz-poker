@@ -11,6 +11,11 @@ interface TgWebApp {
   initData: string;
   ready(): void;
   expand(): void;
+  setHeaderColor?(color: string): void;
+  setBackgroundColor?(color: string): void;
+  setBottomBarColor?(color: string): void;
+  disableVerticalSwipes?(): void;
+  isVersionAtLeast?(version: string): boolean;
   openTelegramLink(url: string): void;
   HapticFeedback?: { selectionChanged(): void };
 }
@@ -51,23 +56,37 @@ export function roomFromStartParam(start: string | null): string | null {
   return isRoomId(id) ? id : null;
 }
 
+/** Same look as in VK: the app's dark colours around it, no swipe-to-close mid-hand. */
+const APP_BG = '#101827';
+function setUp(): void {
+  const app = webApp();
+  if (!app) return;
+  app.ready();
+  app.expand();
+  const at = (v: string) => app.isVersionAtLeast?.(v) ?? false;
+  try {
+    if (at('6.1')) {
+      app.setHeaderColor?.(APP_BG);
+      app.setBackgroundColor?.(APP_BG);
+    }
+    if (at('7.10')) app.setBottomBarColor?.(APP_BG);
+    if (at('7.7')) app.disableVerticalSwipes?.();
+  } catch {
+    // Older clients: cosmetic only.
+  }
+}
+
 export const telegram: Platform = {
   name: 'telegram',
+  label: 'Telegram',
   canHost: true,
 
   init() {
-    if (webApp()) {
-      webApp()!.ready();
-      webApp()!.expand();
-      return;
-    }
+    if (webApp()) return setUp();
     const s = document.createElement('script');
     s.src = SDK;
     s.async = true;
-    s.onload = () => {
-      webApp()?.ready();
-      webApp()?.expand();
-    };
+    s.onload = setUp;
     document.head.appendChild(s);
   },
 
@@ -104,7 +123,10 @@ export const telegram: Platform = {
   inviteLink(roomId) {
     const bot = import.meta.env.VITE_TG_BOT;
     const app = import.meta.env.VITE_TG_APP;
-    return bot && app ? `https://t.me/${bot}/${app}?startapp=${START_PREFIX}${roomId}` : null;
+    if (!bot) return null;
+    // A named Mini App (BotFather /newapp) or the bot's main Mini App.
+    const start = `startapp=${START_PREFIX}${roomId}`;
+    return app ? `https://t.me/${bot}/${app}?${start}` : `https://t.me/${bot}?${start}`;
   },
 
   /** start_param stays in initData for the whole session: hand it out once. */

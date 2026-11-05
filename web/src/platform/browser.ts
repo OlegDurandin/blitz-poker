@@ -33,6 +33,7 @@ export function onHashInvite(cb: (roomId: string) => void): () => void {
 
 export const browser: Platform = {
   name: 'browser',
+  label: '',
   canHost: false,
   init() {},
   haptic() {},
