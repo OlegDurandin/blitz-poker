@@ -14,6 +14,7 @@ use crate::protocol::{
 };
 use crate::room::{Dealer, Event, OsDealer, Profile, Room, RoomError, Status};
 use crate::store::Store;
+use crate::table_room::{TableEvent, TableRoom, TableStatus};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -101,10 +102,17 @@ pub struct Metrics {
     /// Sum and count of how long hosts waited for a friend to join.
     pub wait_for_friend_ms_total: AtomicU64,
     pub wait_for_friend_count: AtomicU64,
+    pub tables_created: AtomicU64,
+    pub tables_started: AtomicU64,
+    pub tables_finished: AtomicU64,
 }
 
 struct State {
     rooms: HashMap<String, Room>,
+    /// Tables of 2–4 with people and bots (`table_room`).
+    tables: HashMap<String, TableRoom>,
+    /// (user, request_id) → table id, for idempotent `create_table`.
+    table_requests: HashMap<(PlayerId, String), String>,
     conns: HashMap<u64, Conn>,
     /// The one live connection per VK user.
     by_user: HashMap<PlayerId, u64>,
@@ -147,10 +155,29 @@ impl Hub {
             .values()
             .map(|r| ((r.host.profile.id, r.create_request.clone()), r.id.clone()))
             .collect();
+        let mut tables = HashMap::new();
+        match store.open_tables() {
+            Ok(list) => {
+                for mut t in list {
+                    t.restore_after_restart(&config.timings, now);
+                    tables.insert(t.id.clone(), t);
+                }
+            }
+            Err(e) => tracing::error!("could not load tables: {e}"),
+        }
+        if !tables.is_empty() {
+            tracing::info!(tables = tables.len(), "restored open tables");
+        }
+        let table_requests = tables
+            .values()
+            .map(|t: &TableRoom| ((t.host, t.create_request.clone()), t.id.clone()))
+            .collect();
         Hub {
             config,
             state: Mutex::new(State {
                 rooms,
+                tables,
+                table_requests,
                 conns: HashMap::new(),
                 by_user: HashMap::new(),
                 create_requests,
@@ -280,7 +307,21 @@ impl Hub {
             }
             self.commit(&mut st, &room_id, now);
         }
+        for table_id in Self::tables_of(&st, player) {
+            let t = st.tables.get_mut(&table_id).expect("table");
+            t.set_connected(player, true, &self.config.timings, now);
+            self.commit_table(&mut st, &table_id, now);
+        }
         (id, rx)
+    }
+
+    /// Open tables where `player` still has a seat.
+    fn tables_of(st: &State, player: PlayerId) -> Vec<String> {
+        st.tables
+            .values()
+            .filter(|t| t.is_open() && t.members().any(|m| m.profile.id == player))
+            .map(|t| t.id.clone())
+            .collect()
     }
 
     pub fn disconnect(&self, conn_id: u64) {
@@ -308,6 +349,11 @@ impl Hub {
                 now,
             );
             self.commit(&mut st, &room_id, now);
+        }
+        for table_id in Self::tables_of(&st, player) {
+            let t = st.tables.get_mut(&table_id).expect("table");
+            t.set_connected(player, false, &self.config.timings, now);
+            self.commit_table(&mut st, &table_id, now);
         }
     }
 
@@ -358,6 +404,9 @@ impl Hub {
         let player = profile.id;
         let timings = self.config.timings;
         let mut dealer = OsDealer;
+        if env.msg.is_table() {
+            return self.handle_table(&mut st, conn_id, &profile, env.msg, now);
+        }
 
         let result: Result<Option<String>, (Option<String>, RoomError)> = match env.msg {
             ClientMsg::Heartbeat => {
@@ -441,15 +490,7 @@ impl Hub {
                         Err((None, RoomError::TooManyRooms))
                     } else {
                         // Codes of open rooms must not clash: a friend would land elsewhere.
-                        let taken: std::collections::HashSet<String> = st
-                            .rooms
-                            .values()
-                            .filter(|r| r.is_open())
-                            .map(|r| ids::room_code(&r.id))
-                            .collect();
-                        let id = std::iter::repeat_with(ids::room_id)
-                            .find(|id| !taken.contains(&ids::room_code(id)))
-                            .expect("an unused code");
+                        let id = Self::fresh_id(&st);
                         st.rooms.insert(
                             id.clone(),
                             Room::new(id.clone(), profile.clone(), request_id.clone(), now),
@@ -486,11 +527,23 @@ impl Hub {
                     );
                     return;
                 }
-                let found = ids::parse_code(&code).and_then(|code| {
+                let code = ids::parse_code(&code);
+                let found = code.as_ref().and_then(|code| {
                     st.rooms
                         .values()
-                        .find(|r| r.status == Status::Waiting && ids::room_code(&r.id) == code)
+                        .find(|r| r.status == Status::Waiting && ids::room_code(&r.id) == *code)
                 });
+                let table = code.as_ref().and_then(|code| {
+                    st.tables
+                        .values()
+                        .find(|t| t.joinable() && ids::room_code(&t.id) == *code)
+                });
+                if let (None, Some(t)) = (found, table) {
+                    let preview = t.preview(player);
+                    tracing::info!(table = %ids::log_tag(&t.id), "table found by code");
+                    reply(&st, ServerMsg::TablePreview { preview });
+                    return;
+                }
                 match found {
                     Some(room) => {
                         let preview = room.preview(player);
@@ -518,6 +571,16 @@ impl Hub {
                         );
                     }
                 }
+                Ok(None)
+            }
+            // An invite link may lead to a table: same link format, its own preview.
+            ClientMsg::PeekRoom { room_id }
+                if !st.rooms.contains_key(&room_id)
+                    && self.find_table(&mut st, &room_id).is_some() =>
+            {
+                let preview = st.tables[&room_id].preview(player);
+                tracing::info!(table = %ids::log_tag(&room_id), status = ?preview.status, "table peek");
+                reply(&st, ServerMsg::TablePreview { preview });
                 Ok(None)
             }
             ClientMsg::PeekRoom { room_id } => match self.find(&mut st, &room_id) {
@@ -662,6 +725,15 @@ impl Hub {
             ClientMsg::Surrender { room_id } => {
                 self.with_room(&mut st, &room_id, |room, _| room.surrender(player, now))
             }
+            ClientMsg::CreateTable { .. }
+            | ClientMsg::JoinTable { .. }
+            | ClientMsg::LeaveTable { .. }
+            | ClientMsg::TableAddBot { .. }
+            | ClientMsg::TableRemoveBot { .. }
+            | ClientMsg::StartTable { .. }
+            | ClientMsg::TableAction { .. }
+            | ClientMsg::TableAgain { .. }
+            | ClientMsg::RequestTableSnapshot { .. } => unreachable!("handled by handle_table"),
         };
 
         match result {
@@ -744,6 +816,291 @@ impl Hub {
         }
     }
 
+    /// A new room or table id whose six-digit code no open room or table uses:
+    /// a friend typing it must land in the right place.
+    fn fresh_id(st: &State) -> String {
+        let taken: std::collections::HashSet<String> = st
+            .rooms
+            .values()
+            .filter(|r| r.is_open())
+            .map(|r| ids::room_code(&r.id))
+            .chain(
+                st.tables
+                    .values()
+                    .filter(|t| t.is_open())
+                    .map(|t| ids::room_code(&t.id)),
+            )
+            .collect();
+        std::iter::repeat_with(ids::room_id)
+            .find(|id| !taken.contains(&ids::room_code(id)))
+            .expect("an unused code")
+    }
+
+    /// A table in memory, or a closed one brought back from the store.
+    fn find_table<'a>(&self, st: &'a mut State, id: &str) -> Option<&'a TableRoom> {
+        if !st.tables.contains_key(id) {
+            let stored = st.store.table(id).ok().flatten()?;
+            st.tables.insert(id.to_string(), stored);
+        }
+        st.tables.get(id)
+    }
+
+    /// Handles a table message; replies and commits on its own.
+    fn handle_table(
+        &self,
+        st: &mut State,
+        conn_id: u64,
+        profile: &Profile,
+        msg: ClientMsg,
+        now: u64,
+    ) {
+        let player = profile.id;
+        let timings = self.config.timings;
+        let mut dealer = OsDealer;
+        let reply = |st: &State, msg: ServerMsg| {
+            if let Some(c) = st.conns.get(&conn_id) {
+                self.send(c, &msg);
+            }
+        };
+        let fail = |st: &State, id: Option<String>, e: RoomError| {
+            reply(st, error(id, e.code(), e.message()));
+        };
+        // Runs `f` on a table; on success the table is saved and broadcast.
+        let on_table =
+            |st: &mut State,
+             id: String,
+             f: &mut dyn FnMut(&mut TableRoom) -> Result<(), RoomError>| {
+                if self.find_table(st, &id).is_none() {
+                    return fail(st, Some(id), RoomError::NotFound);
+                }
+                let t = st.tables.get_mut(&id).expect("found above");
+                match f(t) {
+                    Ok(()) => self.commit_table(st, &id, now),
+                    Err(e) => fail(st, Some(id), e),
+                }
+            };
+        match msg {
+            ClientMsg::CreateTable { .. } if player.is_guest() => reply(
+                st,
+                error(
+                    None,
+                    "guest_cannot_host",
+                    "Собрать стол можно только в игре внутри VK или Telegram. Войдите по коду друга",
+                ),
+            ),
+            ClientMsg::CreateTable { request_id, seats } => {
+                let key = (player, request_id.clone());
+                if let Some(id) = st.table_requests.get(&key).cloned() {
+                    reply(
+                        st,
+                        ServerMsg::TableCreated {
+                            table_id: id.clone(),
+                            request_id,
+                            reused: false,
+                        },
+                    );
+                    return self.commit_table(st, &id, now);
+                }
+                // "Стол с друзьями" again returns to an open lobby of the same
+                // size, so a link already sent keeps working; others close.
+                let lobbies: Vec<(usize, String)> = st
+                    .tables
+                    .values()
+                    .filter(|t| t.host == player && t.status == TableStatus::Lobby)
+                    .map(|t| (t.seats.len(), t.id.clone()))
+                    .collect();
+                let reuse = lobbies
+                    .iter()
+                    .find(|(n, _)| *n == seats)
+                    .map(|(_, id)| id.clone());
+                for (_, id) in lobbies.iter().filter(|(_, id)| Some(id) != reuse.as_ref()) {
+                    let _ = st.tables.get_mut(id).expect("table").leave(player, now);
+                    self.commit_table(st, id, now);
+                }
+                let (id, reused) = match reuse {
+                    Some(id) => (id, true),
+                    None => {
+                        let id = Self::fresh_id(st);
+                        match TableRoom::new(
+                            id.clone(),
+                            profile.clone(),
+                            seats,
+                            request_id.clone(),
+                            now,
+                        ) {
+                            Ok(t) => {
+                                st.tables.insert(id.clone(), t);
+                                self.metrics.tables_created.fetch_add(1, Ordering::Relaxed);
+                                tracing::info!(table = %ids::log_tag(&id), seats, "table created");
+                                (id, false)
+                            }
+                            Err(e) => return fail(st, None, e),
+                        }
+                    }
+                };
+                st.table_requests.insert(key, id.clone());
+                reply(
+                    st,
+                    ServerMsg::TableCreated {
+                        table_id: id.clone(),
+                        request_id,
+                        reused,
+                    },
+                );
+                self.commit_table(st, &id, now);
+            }
+            ClientMsg::JoinTable { table_id } => on_table(st, table_id, &mut |t| {
+                let seat = t.join(profile.clone(), now)?;
+                t.set_connected(player, true, &timings, now);
+                tracing::info!(table = %ids::log_tag(&t.id), seat, "joined table");
+                Ok(())
+            }),
+            ClientMsg::LeaveTable { table_id } => {
+                on_table(st, table_id, &mut |t| t.leave(player, now))
+            }
+            ClientMsg::TableAddBot { table_id, opponent } => {
+                on_table(st, table_id, &mut |t| t.add_bot(player, opponent, now))
+            }
+            ClientMsg::TableRemoveBot { table_id, seat } => {
+                on_table(st, table_id, &mut |t| t.remove_bot(player, seat, now))
+            }
+            ClientMsg::StartTable { table_id } => on_table(st, table_id, &mut |t| {
+                t.start(player, &mut dealer, now)?;
+                self.metrics.tables_started.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }),
+            ClientMsg::TableAgain { table_id } => on_table(st, table_id, &mut |t| {
+                t.vote_again(player, &mut dealer, now)
+            }),
+            ClientMsg::RequestTableSnapshot { table_id } => {
+                match self
+                    .find_table(st, &table_id)
+                    .map(|t| t.seat_of(player).is_some())
+                {
+                    Some(true) => {
+                        if let Some(c) = st.conns.get(&conn_id) {
+                            self.send_table_snapshot(st, c, &table_id, now);
+                        }
+                    }
+                    Some(false) => fail(st, Some(table_id), RoomError::NotMember),
+                    None => fail(st, Some(table_id), RoomError::NotFound),
+                }
+            }
+            ClientMsg::TableAction {
+                table_id,
+                match_id,
+                action_id,
+                expected_state_version,
+                action,
+            } => {
+                let outcome = st
+                    .tables
+                    .get_mut(&table_id)
+                    .ok_or(RoomError::NotFound)
+                    .and_then(|t| {
+                        t.action(
+                            player,
+                            &match_id,
+                            &action_id,
+                            expected_state_version,
+                            action,
+                            &timings,
+                            now,
+                        )
+                    });
+                match outcome {
+                    Ok(ack) => {
+                        self.metrics
+                            .actions_accepted
+                            .fetch_add(1, Ordering::Relaxed);
+                        reply(
+                            st,
+                            ServerMsg::ActionAccepted {
+                                action_id,
+                                state_version: ack.state_version,
+                                duplicate: ack.duplicate,
+                            },
+                        );
+                        if ack.duplicate {
+                            if let Some(c) = st.conns.get(&conn_id) {
+                                self.send_table_snapshot(st, c, &table_id, now);
+                            }
+                        } else {
+                            self.commit_table(st, &table_id, now);
+                        }
+                    }
+                    Err(e) => {
+                        self.metrics
+                            .actions_rejected
+                            .fetch_add(1, Ordering::Relaxed);
+                        reply(
+                            st,
+                            ServerMsg::ActionRejected {
+                                action_id,
+                                code: e.code(),
+                                message: e.message(),
+                            },
+                        );
+                        if let Some(c) = st.conns.get(&conn_id) {
+                            self.send_table_snapshot(st, c, &table_id, now);
+                        }
+                    }
+                }
+            }
+            _ => unreachable!("only table messages come here"),
+        }
+    }
+
+    /// Persists a changed table and sends every person at it a snapshot.
+    fn commit_table(&self, st: &mut State, id: &str, now: u64) {
+        let Some(t) = st.tables.get_mut(id) else {
+            return;
+        };
+        for event in t.take_events() {
+            let TableEvent::Finished { people, bots } = event;
+            self.metrics.tables_finished.fetch_add(1, Ordering::Relaxed);
+            tracing::info!(table = %ids::log_tag(id), people, bots, "table finished");
+        }
+        let t = st.tables.get(id).expect("table");
+        if let Err(e) = st.store.save_table(t, now) {
+            self.metrics
+                .persistence_errors
+                .fetch_add(1, Ordering::Relaxed);
+            tracing::error!(table = %ids::log_tag(id), "save failed: {e}");
+        }
+        // Everyone seated, including who just left: they see the result.
+        let players: Vec<PlayerId> = t
+            .seats
+            .iter()
+            .filter_map(|s| match s {
+                crate::table_room::TableSeat::Player { member, .. } => Some(member.profile.id),
+                _ => None,
+            })
+            .collect();
+        for p in players {
+            if let Some(c) = st.by_user.get(&p).and_then(|c| st.conns.get(c)) {
+                self.send_table_snapshot(st, c, id, now);
+            }
+        }
+    }
+
+    fn send_table_snapshot(&self, st: &State, conn: &Conn, id: &str, now: u64) {
+        let Some(view) = st
+            .tables
+            .get(id)
+            .and_then(|t| t.view_for(conn.profile.id, &self.config.timings))
+        else {
+            return;
+        };
+        self.send(
+            conn,
+            &ServerMsg::TableSnapshot {
+                server_time_ms: now,
+                table: Box::new(view),
+            },
+        );
+    }
+
     fn send_snapshot(&self, st: &State, conn: &Conn, room_id: &str, now: u64) {
         let Some(view) = st
             .rooms
@@ -773,10 +1130,21 @@ impl Hub {
                 self.commit(&mut st, &id, now);
             }
         }
+        let ids: Vec<String> = st.tables.keys().cloned().collect();
+        for id in ids {
+            let t = st.tables.get_mut(&id).expect("table");
+            if t.tick(&mut dealer as &mut dyn Dealer, &self.config.timings, now) {
+                self.commit_table(&mut st, &id, now);
+            }
+        }
         st.rooms
             .retain(|_, r| r.is_open() || now.saturating_sub(r.activity_ms) < CLOSED_IN_MEMORY_MS);
+        st.tables
+            .retain(|_, t| t.is_open() || now.saturating_sub(t.activity_ms) < CLOSED_IN_MEMORY_MS);
         let live: std::collections::HashSet<String> = st.rooms.keys().cloned().collect();
         st.create_requests.retain(|_, id| live.contains(id));
+        let live: std::collections::HashSet<String> = st.tables.keys().cloned().collect();
+        st.table_requests.retain(|_, id| live.contains(id));
         st.code_misses.prune(now, CODE_MISSES_WINDOW_MS);
         st.guest_auths.prune(now, GUEST_AUTH_WINDOW_MS);
         st.sessions.prune(now);
@@ -803,10 +1171,21 @@ impl Hub {
             };
             *by_status.entry(name).or_default() += 1;
         }
+        let mut tables: HashMap<&'static str, usize> = HashMap::new();
+        for t in st.tables.values() {
+            let name = match t.status {
+                TableStatus::Lobby => "lobby",
+                TableStatus::Playing => "playing",
+                TableStatus::Finished => "finished",
+                TableStatus::Closed => "closed",
+            };
+            *tables.entry(name).or_default() += 1;
+        }
         serde_json::json!({
             "ok": true,
             "protocol": PROTOCOL_VERSION,
             "rooms": by_status,
+            "tables": tables,
             "connections": st.conns.len(),
             "metrics": self.metrics,
         })

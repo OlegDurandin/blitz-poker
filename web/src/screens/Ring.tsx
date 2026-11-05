@@ -1,5 +1,6 @@
-// "Третий не лишний": the human (seat 0, bottom) against two or three bots
-// along the top. Same felt, cards and controls as the duel table.
+// "Третий не лишний": a table of 3–4, me at the bottom and everyone else
+// along the top in turn order. Solo against bots, or online with friends
+// (`online`: names, turn clock, the server deals the next hand by itself).
 
 import { useEffect, useState } from 'react';
 import { BotAvatar } from '../components/icons';
@@ -11,6 +12,25 @@ import { STREET_NAME, describeHand } from '../game/format';
 import { opponentInfo } from '../game/opponents';
 import { streetFor, useRunoutReveal } from '../game/runout';
 import { platform } from '../platform';
+import { formatClock } from './Table';
+
+/** A person at an online table, as the server shows them. */
+export interface Person {
+  name: string;
+  photo: string | null;
+  connected: boolean;
+  gone: boolean;
+}
+
+export interface OnlineTable {
+  /** Per seat; null for bots. */
+  people: (Person | null)[];
+  /** Who acts and how long they have left (null while a bot thinks). */
+  clock: { seat: number; leftMs: number | null } | null;
+  nextHandInMs: number | null;
+  /** An action is on its way to the server. */
+  pending: boolean;
+}
 
 interface Props {
   view: TableView;
@@ -18,21 +38,29 @@ interface Props {
   notice: string | null;
   onRetrySave: () => void;
   onAct: (action: PlayerAction) => void;
-  onNext: () => void;
-  /** The human is out of chips: go to the standings. */
-  onEnd: () => void;
+  onNext?: () => void;
+  /** Solo: the human is out of chips, go to the standings. */
+  onEnd?: () => void;
   onMenu: () => void;
+  online?: OnlineTable;
 }
 
-export function seatName(view: Pick<TableView, 'seats' | 'me'>, seat: number): string {
+export function seatName(view: Pick<TableView, 'seats' | 'me'>, seat: number, people?: (Person | null)[]): string {
   if (seat === view.me) return 'Вы';
   const s = view.seats[seat];
-  return s.type === 'bot' ? opponentInfo(s.opponent).name : `Игрок ${seat + 1}`;
+  if (s.type === 'bot') return opponentInfo(s.opponent).name;
+  return people?.[seat]?.name ?? `Игрок ${seat + 1}`;
 }
 
 function seatColor(view: TableView, seat: number): string {
   const s = view.seats[seat];
   return s.type === 'bot' ? opponentInfo(s.opponent).color : '#8fb0ff';
+}
+
+/** Everyone but me, clockwise from my left: the order they act after me. */
+function othersInOrder(view: TableView): number[] {
+  const n = view.seats.length;
+  return Array.from({ length: n - 1 }, (_, i) => (view.me + 1 + i) % n);
 }
 
 /** ActionTag renders duel records; the seat field is not shown. */
@@ -65,7 +93,9 @@ function marks(outcome: TableOutcome | null, me: number) {
 }
 
 export function Ring(props: Props) {
-  const { view, paused } = props;
+  const { view, paused, online } = props;
+  const people = online?.people;
+  const pending = online?.pending ?? false;
   const me = view.me;
   const reveal = useRunoutReveal(`${view.table_id}:${view.hand_number}`, view.outcome?.runout_from ?? null, view.board.length);
   const [raiseOpen, setRaiseOpen] = useState(false);
@@ -88,7 +118,7 @@ export function Ring(props: Props) {
     props.onAct(action);
   };
 
-  const opponents = view.seats.map((_, i) => i).filter((i) => i !== me);
+  const opponents = othersInOrder(view);
   const potShown = reveal.revealing && outcome ? outcome.pot : view.pot;
   const board = view.board.slice(0, reveal.visible);
 
@@ -126,6 +156,8 @@ export function Ring(props: Props) {
             gain={settled && outcome ? outcome.net[seat] : 0}
             cardProps={cardProps}
             thinking={view.phase === 'in_hand' && view.to_act === seat}
+            people={people}
+            leftMs={online?.clock?.seat === seat ? online.clock.leftMs : null}
           />
         ))}
       </section>
@@ -144,7 +176,7 @@ export function Ring(props: Props) {
           )}
         </div>
         {settled && outcome ? (
-          <RingBanner view={view} outcome={outcome} />
+          <RingBanner view={view} outcome={outcome} people={people} />
         ) : (
           <div className="felt__street">{STREET_NAME[reveal.revealing ? streetFor(reveal.visible) : view.street]}</div>
         )}
@@ -173,24 +205,25 @@ export function Ring(props: Props) {
 
       <div className="dock">
         <div className="dock__context" aria-live="polite">
-          {dockContext(view, reveal.revealing, paused, busted)}
+          {dockContext(view, reveal.revealing, paused, busted, online)}
         </div>
         <div className="dock__body">
           {myTurn && view.legal ? (
             <div className="actions">
               {view.legal.fold && (
-                <button className="btn btn--secondary btn--action" onClick={() => act({ type: 'fold' })} aria-label="Сбросить карты">
+                <button className="btn btn--secondary btn--action" disabled={pending} onClick={() => act({ type: 'fold' })} aria-label="Сбросить карты">
                   Сбросить
                 </button>
               )}
               {view.legal.check && (
-                <button className="btn btn--secondary btn--action" onClick={() => act({ type: 'check' })} aria-label="Чек: пропустить ход без ставки">
+                <button className="btn btn--secondary btn--action" disabled={pending} onClick={() => act({ type: 'check' })} aria-label="Чек: пропустить ход без ставки">
                   Чек
                 </button>
               )}
               {view.legal.call !== null && (
                 <button
                   className="btn btn--secondary btn--action"
+                  disabled={pending}
                   onClick={() => act({ type: 'call' })}
                   aria-label={view.legal.call_is_all_in ? `Уравнять олл-ин ${view.legal.call}` : `Уравнять ${view.legal.call}`}
                 >
@@ -200,6 +233,7 @@ export function Ring(props: Props) {
               {view.legal.raise && (
                 <button
                   className="btn btn--primary btn--action"
+                  disabled={pending}
                   onClick={() => setRaiseOpen(true)}
                   aria-label={view.legal.raise.kind === 'bet' ? 'Сделать ставку' : 'Повысить ставку'}
                   aria-haspopup="dialog"
@@ -212,6 +246,11 @@ export function Ring(props: Props) {
             <button className="btn btn--secondary btn--block" onClick={reveal.skip}>
               Пропустить анимацию
             </button>
+          ) : settled && online ? (
+            // Online the server deals the next hand by itself.
+            <div className="actions actions--waiting duel-next" role="status">
+              {view.is_final_hand ? 'Подводим итоги…' : 'Следующая раздача скоро начнётся'}
+            </div>
           ) : busted && !view.is_final_hand ? (
             <button className="btn btn--primary btn--block" onClick={props.onEnd}>
               Итоги стола
@@ -250,6 +289,8 @@ function OpponentSeat({
   gain,
   cardProps,
   thinking,
+  people,
+  leftMs,
 }: {
   view: TableView;
   seat: number;
@@ -257,14 +298,18 @@ function OpponentSeat({
   gain: number;
   cardProps: (c: Card) => { bestMine?: boolean; bestTheirs?: boolean };
   thinking: boolean;
+  people?: (Person | null)[];
+  leftMs: number | null;
 }) {
-  const name = seatName(view, seat);
+  const person = people?.[seat] ?? null;
+  const name = seatName(view, seat, people);
+  const away = person !== null && (!person.connected || person.gone);
   const shown = view.shown[seat];
   const inHand = view.dealt[seat] && !view.folded[seat];
   const out = !view.dealt[seat];
   return (
     <div
-      className={`ring-seat${thinking ? ' is-turn' : ''}${view.folded[seat] ? ' is-folded' : ''}${out ? ' is-out' : ''}`}
+      className={`ring-seat${thinking ? ' is-turn' : ''}${view.folded[seat] ? ' is-folded' : ''}${out ? ' is-out' : ''}${away ? ' is-away' : ''}`}
       aria-label={`${name}, стек ${stack}`}
     >
       <div className="ring-seat__cards">
@@ -276,11 +321,19 @@ function OpponentSeat({
             <PlayingCard faceDown size="sm" />
           </>
         ) : (
-          <span className="ring-seat__status">{out ? 'Выбыл' : 'Сбросил'}</span>
+          <span className="ring-seat__status">{person?.gone ? 'Ушёл' : out ? 'Выбыл' : 'Сбросил'}</span>
         )}
       </div>
       <div className="ring-seat__plate">
-        <BotAvatar color={seatColor(view, seat)} />
+        {person?.photo ? (
+          <img className="bot-avatar avatar-photo" src={person.photo} alt="" />
+        ) : person ? (
+          <span className="bot-avatar ring-seat__initial" aria-hidden="true">
+            {person.name.slice(0, 1).toUpperCase()}
+          </span>
+        ) : (
+          <BotAvatar color={seatColor(view, seat)} />
+        )}
         <div className="ring-seat__info">
           <div className="seat__name">
             <span className="seat__name-text">{name.replace(/^Бот /, '')}</span>
@@ -290,14 +343,21 @@ function OpponentSeat({
         </div>
       </div>
       <BetChip amount={view.bets[seat]} who={name} />
-      <ActionTag action={lastAction(view, seat)} thinking={thinking} />
+      {thinking && person ? (
+        <div className={`tag tag--clock${leftMs !== null && leftMs <= 5000 ? ' is-low' : ''}`}>
+          ⏱ {leftMs !== null ? formatClock(leftMs) : '…'}
+        </div>
+      ) : (
+        <ActionTag action={lastAction(view, seat)} thinking={thinking} />
+      )}
     </div>
   );
 }
 
-function RingBanner({ view, outcome }: { view: TableView; outcome: TableOutcome }) {
+function RingBanner({ view, outcome, people }: { view: TableView; outcome: TableOutcome; people?: (Person | null)[] }) {
   const me = view.me;
-  const names = (seats: number[]) => seats.map((s) => seatName(view, s)).join(', ');
+  const name = (seat: number) => seatName(view, seat, people);
+  const names = (seats: number[]) => seats.map(name).join(', ');
   const main = outcome.pots[0];
   const won = outcome.awarded[me];
   const tone = outcome.net[me] > 0 ? 'win' : outcome.net[me] < 0 ? 'loss' : 'draw';
@@ -305,7 +365,7 @@ function RingBanner({ view, outcome }: { view: TableView; outcome: TableOutcome 
   let headline: string;
   if (main.winners.length > 1) headline = `Банк ${main.amount} разделён: ${names(main.winners)}`;
   else if (main.winners[0] === me) headline = `Вы выиграли банк ${won}`;
-  else headline = `${seatName(view, main.winners[0])} выигрывает банк ${main.amount}`;
+  else headline = `${name(main.winners[0])} выигрывает банк ${main.amount}`;
 
   const shown = outcome.showdown;
   return (
@@ -325,7 +385,7 @@ function RingBanner({ view, outcome }: { view: TableView; outcome: TableOutcome 
               <span key={seat} className="ring-banner__hand">
                 {seat === me && <i className="legend legend--mine" aria-hidden="true" />}
                 {seat !== me && main.winners.includes(seat) && <i className="legend legend--theirs" aria-hidden="true" />}
-                {seatName(view, seat)} — {describeHand(h)}
+                {name(seat)} — {describeHand(h)}
               </span>
             ) : null,
           )
@@ -338,17 +398,32 @@ function RingBanner({ view, outcome }: { view: TableView; outcome: TableOutcome 
   );
 }
 
-function dockContext(view: TableView, revealing: boolean, paused: boolean, busted: boolean): string {
+function dockContext(
+  view: TableView,
+  revealing: boolean,
+  paused: boolean,
+  busted: boolean,
+  online?: OnlineTable,
+): string {
   if (revealing) return 'Олл-ин: открываем карты';
   if (view.phase === 'hand_over') {
     if (view.is_final_hand) return 'Стол завершён';
-    if (busted) return 'У вас закончились фишки';
+    if (busted) return online ? 'У вас закончились фишки — можно досмотреть' : 'У вас закончились фишки';
+    if (online?.nextHandInMs != null) {
+      return `Раздача ${view.hand_number + 1}/${view.hands_total} через ${Math.max(1, Math.ceil(online.nextHandInMs / 1000))} с`;
+    }
     const [sb, bb] = view.next_blinds ?? [view.sb, view.bb];
     return `Раздача ${view.hand_number + 1}/${view.hands_total} · блайнды ${sb}/${bb}`;
   }
   if (view.to_act === view.me) {
-    return view.to_call > 0 ? `Ваш ход · к ответу: ${Math.min(view.to_call, view.stacks[view.me])}` : 'Ваш ход';
+    if (online?.pending) return 'Отправляем ход…';
+    const clock = online?.clock?.leftMs != null ? ` · ${formatClock(online.clock.leftMs)}` : '';
+    return (view.to_call > 0 ? `Ваш ход · к ответу: ${Math.min(view.to_call, view.stacks[view.me])}` : 'Ваш ход') + clock;
   }
-  if (view.to_act !== null) return paused ? 'Пауза' : `${seatName(view, view.to_act)} думает…`;
+  if (view.to_act !== null) {
+    const who = seatName(view, view.to_act, online?.people);
+    if (online) return online.people[view.to_act] ? `Ход: ${who}` : `${who} думает…`;
+    return paused ? 'Пауза' : `${who} думает…`;
+  }
   return '';
 }

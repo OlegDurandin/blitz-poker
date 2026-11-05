@@ -1,11 +1,12 @@
-//! SQLite persistence: open rooms (with the authoritative match inside) and
-//! the head-to-head score of each pair of players.
+//! SQLite persistence: open rooms and tables (with the authoritative match
+//! inside) and the head-to-head score of each pair of players.
 //!
 //! A room is written after every change, so a restart or deploy resumes
 //! every match from its last accepted action.
 
 use crate::player::PlayerId;
 use crate::room::{Room, Score, Status};
+use crate::table_room::{TableRoom, TableStatus};
 use poker_core::MatchOutcome;
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -29,7 +30,14 @@ CREATE TABLE IF NOT EXISTS duels (
     draws INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (a, b)
 );
-PRAGMA user_version = 1;
+CREATE TABLE IF NOT EXISTS tables (
+    id TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    data TEXT NOT NULL,
+    updated_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS tables_status ON tables (status);
+PRAGMA user_version = 2;
 ";
 
 fn status_name(s: Status) -> &'static str {
@@ -88,12 +96,62 @@ impl Store {
         Ok(data.and_then(|d| serde_json::from_str(&d).ok()))
     }
 
-    /// Drops closed rooms not touched for `older_than_ms`.
+    /// Drops closed rooms and tables not touched for `older_than_ms`.
     pub fn prune_closed(&self, now: u64, older_than_ms: u64) -> rusqlite::Result<usize> {
-        self.conn.execute(
+        let before = now.saturating_sub(older_than_ms) as i64;
+        let rooms = self.conn.execute(
             "DELETE FROM rooms WHERE status = 'closed' AND updated_ms < ?1",
-            [now.saturating_sub(older_than_ms) as i64],
-        )
+            [before],
+        )?;
+        let tables = self.conn.execute(
+            "DELETE FROM tables WHERE status = 'closed' AND updated_ms < ?1",
+            [before],
+        )?;
+        Ok(rooms + tables)
+    }
+
+    pub fn save_table(&self, table: &TableRoom, now: u64) -> rusqlite::Result<()> {
+        let data = serde_json::to_string(table).expect("table serializes");
+        let status = match table.status {
+            TableStatus::Lobby => "lobby",
+            TableStatus::Playing => "playing",
+            TableStatus::Finished => "finished",
+            TableStatus::Closed => "closed",
+        };
+        self.conn.execute(
+            "INSERT INTO tables (id, status, data, updated_ms) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (id) DO UPDATE SET status = ?2, data = ?3, updated_ms = ?4",
+            params![table.id, status, data, now as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Tables that are not closed. Unreadable rows are skipped and logged.
+    pub fn open_tables(&self) -> rusqlite::Result<Vec<TableRoom>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, data FROM tables WHERE status != 'closed'")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        let mut tables = Vec::new();
+        for row in rows {
+            let (id, data) = row?;
+            match serde_json::from_str::<TableRoom>(&data) {
+                Ok(t) => tables.push(t),
+                Err(e) => {
+                    tracing::error!(table = %crate::ids::log_tag(&id), "unreadable table: {e}")
+                }
+            }
+        }
+        Ok(tables)
+    }
+
+    /// A table by id, closed ones included.
+    pub fn table(&self, id: &str) -> rusqlite::Result<Option<TableRoom>> {
+        let data: Option<String> = self
+            .conn
+            .query_row("SELECT data FROM tables WHERE id = ?1", [id], |r| r.get(0))
+            .optional()?;
+        Ok(data.and_then(|d| serde_json::from_str(&d).ok()))
     }
 
     pub fn record_duel(
@@ -194,5 +252,24 @@ mod tests {
             }
         );
         assert_eq!(s.head_to_head(pid(1), pid(2)).unwrap(), Score::default());
+    }
+
+    #[test]
+    fn tables_round_trip_and_closed_ones_are_pruned() {
+        let s = Store::open(":memory:").unwrap();
+        let p = Profile {
+            id: pid(5),
+            name: "A".into(),
+            photo: None,
+        };
+        let mut t = TableRoom::new("t1".into(), p, 3, "q".into(), 10).unwrap();
+        s.save_table(&t, 10).unwrap();
+        assert_eq!(s.open_tables().unwrap(), vec![t.clone()]);
+        t.leave(pid(5), 20).unwrap();
+        s.save_table(&t, 20).unwrap();
+        assert!(s.open_tables().unwrap().is_empty());
+        assert_eq!(s.table("t1").unwrap(), Some(t));
+        assert_eq!(s.prune_closed(1_000, 100).unwrap(), 1);
+        assert_eq!(s.table("t1").unwrap(), None);
     }
 }

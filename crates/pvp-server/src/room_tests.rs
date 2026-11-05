@@ -42,6 +42,7 @@ const T: Timings = Timings {
     room_ttl_ms: 900_000,
     hand_pause_ms: 4_000,
     runout_pause_ms: 6_500,
+    bot_think_ms: 900,
 };
 
 fn profile(id: PlayerId) -> Profile {

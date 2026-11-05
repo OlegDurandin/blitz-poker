@@ -7,7 +7,8 @@ import { track } from '../game/analytics';
 import { platform } from '../platform';
 import { PVP_URL, activeRoom, devUserId, guest } from './config';
 import { DuelConnection, type ConnState } from './connection';
-import type { RoomPreview, RoomView, ServerMsg } from './types';
+import type { Opponent } from '../engine/types';
+import type { RoomPreview, RoomView, ServerMsg, TablePreview, TableRoomView } from './types';
 
 export interface DuelState {
   conn: ConnState;
@@ -20,6 +21,10 @@ export interface DuelState {
   pending: boolean;
   /** "Играть с другом" brought the host back to a room that was still open. */
   reused: boolean;
+  /** A table of 2–4 this screen created or joined. */
+  table: TableRoomView | null;
+  /** A link or code led to a table rather than a duel room. */
+  tablePreview: TablePreview | null;
 }
 
 function randomId(): string {
@@ -36,6 +41,8 @@ export function useDuel(active: boolean) {
     error: null,
     pending: false,
     reused: false,
+    table: null,
+    tablePreview: null,
   });
   const conn = useRef<DuelConnection | null>(null);
   const roomId = useRef<string | null>(null);
@@ -47,6 +54,8 @@ export function useDuel(active: boolean) {
   /** Bumped when a guest changes their name: reconnects with it. */
   const [profileVersion, setProfileVersion] = useState(0);
   const restarting = useRef(false);
+  const tableId = useRef<string | null>(null);
+  const pendingJoinTable = useRef<string | null>(null);
 
   const onMessage = useCallback((msg: ServerMsg) => {
     switch (msg.type) {
@@ -70,6 +79,24 @@ export function useDuel(active: boolean) {
             s.pending && (msg.room.game?.state_version ?? 0) > (s.room?.game?.state_version ?? 0);
           if (settled) pendingAction.current = null;
           return { ...s, room: msg.room, pending: settled ? false : s.pending, error: null };
+        });
+        break;
+      case 'table_created':
+        tableId.current = msg.table_id;
+        activeRoom.set(msg.table_id);
+        setState((s) => ({ ...s, reused: Boolean(msg.reused) }));
+        break;
+      case 'table_preview':
+        setState((s) => ({ ...s, tablePreview: msg.preview, error: null }));
+        break;
+      case 'table_snapshot':
+        if (msg.table.table_id !== tableId.current) break;
+        if (msg.table.status === 'closed') activeRoom.set(null);
+        setState((s) => {
+          const settled =
+            s.pending && (msg.table.game?.state_version ?? 0) > (s.table?.game?.state_version ?? 0);
+          if (settled) pendingAction.current = null;
+          return { ...s, table: msg.table, pending: settled ? false : s.pending, error: null };
         });
         break;
       case 'action_rejected':
@@ -106,6 +133,12 @@ export function useDuel(active: boolean) {
             } else if (roomId.current) {
               c.send({ type: 'request_snapshot', room_id: roomId.current });
             }
+            if (pendingJoinTable.current) {
+              c.send({ type: 'join_table', table_id: pendingJoinTable.current });
+              pendingJoinTable.current = null;
+            } else if (tableId.current) {
+              c.send({ type: 'request_table_snapshot', table_id: tableId.current });
+            }
           }
         },
       });
@@ -128,10 +161,23 @@ export function useDuel(active: boolean) {
 
   const reset = useCallback(() => {
     roomId.current = null;
+    tableId.current = null;
     activeRoom.set(null);
     pendingAction.current = null;
-    setState((s) => ({ ...s, room: null, preview: null, error: null, pending: false, reused: false }));
+    setState((s) => ({
+      ...s,
+      room: null,
+      preview: null,
+      error: null,
+      pending: false,
+      reused: false,
+      table: null,
+      tablePreview: null,
+    }));
   }, []);
+
+  const tableSend = (make: (id: string) => Parameters<DuelConnection['send']>[0]) =>
+    tableId.current ? send(make(tableId.current)) : false;
 
   return {
     state,
@@ -144,7 +190,7 @@ export function useDuel(active: boolean) {
     },
     /** A friend's room by its six-digit code: answers with a preview, like `peek`. */
     findByCode: (code: string) => {
-      setState((s) => ({ ...s, preview: null, error: null }));
+      setState((s) => ({ ...s, preview: null, tablePreview: null, error: null }));
       if (restarting.current || !conn.current?.send({ type: 'find_room', code })) pendingFind.current = code;
     },
     /** Outside VK: the name the host will see; reconnects if it changed. */
@@ -158,7 +204,7 @@ export function useDuel(active: boolean) {
       setProfileVersion((v) => v + 1);
     },
     peek: (id: string) => {
-      setState((s) => ({ ...s, preview: null, error: null }));
+      setState((s) => ({ ...s, preview: null, tablePreview: null, error: null }));
       send({ type: 'peek_room', room_id: id });
     },
     join: (id: string) => {
@@ -196,6 +242,45 @@ export function useDuel(active: boolean) {
     acceptRematch: () => roomId.current && send({ type: 'accept_rematch', room_id: roomId.current }),
     declineRematch: () => roomId.current && send({ type: 'decline_rematch', room_id: roomId.current }),
     reconnect: () => conn.current?.reconnect(),
+
+    // ---------- tables ----------
+    createTable: (seats: number) => {
+      if (tableId.current) send({ type: 'leave_table', table_id: tableId.current });
+      reset();
+      send({ type: 'create_table', request_id: randomId(), seats });
+    },
+    joinTable: (id: string) => {
+      tableId.current = id;
+      activeRoom.set(id);
+      if (!send({ type: 'join_table', table_id: id })) pendingJoinTable.current = id;
+      track('duel_joined', { table: true });
+    },
+    leaveTable: () => {
+      tableSend((table_id) => ({ type: 'leave_table', table_id }));
+      reset();
+    },
+    /** Mid-match: fold out but keep watching the standings. */
+    quitTable: () => tableSend((table_id) => ({ type: 'leave_table', table_id })),
+    addBot: (opponent: Opponent) => tableSend((table_id) => ({ type: 'table_add_bot', table_id, opponent })),
+    removeBot: (seat: number) => tableSend((table_id) => ({ type: 'table_remove_bot', table_id, seat })),
+    startTable: () => tableSend((table_id) => ({ type: 'start_table', table_id })),
+    tableAgain: () => tableSend((table_id) => ({ type: 'table_again', table_id })),
+    tableAct: (action: PlayerAction) => {
+      const game = state.table?.game;
+      if (!tableId.current || !game || state.pending) return;
+      const actionId = randomId();
+      pendingAction.current = actionId;
+      setState((s) => ({ ...s, pending: true }));
+      const ok = send({
+        type: 'table_action',
+        table_id: tableId.current,
+        match_id: game.match_id,
+        action_id: actionId,
+        expected_state_version: game.state_version,
+        action,
+      });
+      if (!ok) setState((s) => ({ ...s, pending: false }));
+    },
     clearError: () => setState((s) => ({ ...s, error: null })),
     reset,
   };

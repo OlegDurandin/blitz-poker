@@ -35,6 +35,7 @@ fn config(db: &str) -> Config {
         timings: Timings {
             hand_pause_ms: 50,
             runout_pause_ms: 50,
+            bot_think_ms: 10,
             ..Timings::default()
         },
     }
@@ -231,7 +232,10 @@ impl Client {
         loop {
             let frame = tokio::time::timeout(Duration::from_secs(5), self.ws.next())
                 .await
-                .expect("a message within 5 s")
+                .unwrap_or_else(|_| {
+                    let tail: Vec<&String> = self.seen.iter().rev().take(2).collect();
+                    panic!("no message within 5 s; last seen: {tail:#?}")
+                })
                 .expect("socket open")
                 .expect("frame");
             if let Message::Text(t) = frame {
@@ -812,4 +816,187 @@ async fn telegram_player_joins_a_vk_room_by_code() {
         (401, Some("bad_launch_params"))
     );
     s.stop();
+}
+
+// ---------- tables: friends and bots ----------
+
+/// Next table snapshot matching `pred`.
+async fn table_snapshot(c: &mut Client, pred: impl Fn(&Value) -> bool) -> Value {
+    c.until(|m| m["type"] == "table_snapshot" && pred(&m["table"]))
+        .await["table"]
+        .clone()
+}
+
+/// Plays passively from one seat, starting from snapshot `first`, until the
+/// table is finished; returns the final snapshot.
+async fn play_table(c: &mut Client, table_id: &str, first: Value) -> Value {
+    let mut acted = 0;
+    let mut next = Some(first);
+    loop {
+        let t = match next.take() {
+            Some(t) => t,
+            None => table_snapshot(c, |_| true).await,
+        };
+        if t["status"] == "finished" {
+            return t;
+        }
+        let game = &t["game"];
+        let version = game["state_version"].as_u64().unwrap();
+        if game["clock"]["my_turn"] == true && version > acted {
+            acted = version;
+            c.send(json!({
+                "type": "table_action",
+                "table_id": table_id,
+                "match_id": game["match_id"],
+                "action_id": format!("a{version}"),
+                "expected_state_version": version,
+                "action": passive(&game["view"]),
+            }))
+            .await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn friends_and_a_bot_play_a_table() {
+    let s = start(":memory:").await;
+    let mut host = Client::login(s.addr, 1001, "Олег").await;
+    let mut friend = Client::login_telegram(s.addr, 777, "Маша").await;
+    host.send(json!({ "type": "create_table", "request_id": "t1", "seats": 3 }))
+        .await;
+    let created = host.until(|m| m["type"] == "table_created").await;
+    let table_id = created["table_id"].as_str().unwrap().to_string();
+    let lobby = table_snapshot(&mut host, |t| t["status"] == "lobby").await;
+    assert_eq!(lobby["seats"].as_array().unwrap().len(), 3);
+    assert_eq!(lobby["you_are_host"], true);
+
+    // The friend dictates the code: it finds the table, not a duel room.
+    let code = lobby["code"].as_str().unwrap().to_string();
+    friend
+        .send(json!({ "type": "find_room", "code": code }))
+        .await;
+    let preview = friend.until(|m| m["type"] == "table_preview").await;
+    assert_eq!(preview["preview"]["host_name"], "Олег");
+    assert_eq!(preview["preview"]["joinable"], true);
+    assert_eq!(preview["preview"]["taken"], 1);
+    friend
+        .send(json!({ "type": "join_table", "table_id": table_id }))
+        .await;
+    table_snapshot(&mut friend, |t| t["my_seat"] == 1).await;
+
+    // Only the host seats bots and starts.
+    friend
+        .send(json!({ "type": "table_add_bot", "table_id": table_id, "opponent": "alex" }))
+        .await;
+    assert_eq!(
+        friend.until(|m| m["type"] == "server_error").await["code"],
+        "not_member"
+    );
+    host.send(json!({ "type": "table_add_bot", "table_id": table_id, "opponent": "alex" }))
+        .await;
+    table_snapshot(&mut host, |t| t["seats"][2]["type"] == "bot").await;
+    host.send(json!({ "type": "start_table", "table_id": table_id }))
+        .await;
+    let h = table_snapshot(&mut host, |t| t["status"] == "playing").await;
+    let f = table_snapshot(&mut friend, |t| t["status"] == "playing").await;
+    assert_eq!(h["game"]["match_id"], f["game"]["match_id"]);
+    assert_eq!(h["game"]["view"]["hands_total"], 9);
+    // Each sees their own cards only.
+    assert_ne!(h["game"]["view"]["hole"], f["game"]["view"]["hole"]);
+
+    let table = table_id.clone();
+    let (h, f) = tokio::join!(
+        play_table(&mut host, &table_id, h),
+        play_table(&mut friend, &table, f)
+    );
+    let first_match = h["game"]["match_id"].clone();
+    let places = &h["game"]["view"]["result"]["places"];
+    assert_eq!(places, &f["game"]["view"]["result"]["places"]);
+    assert_eq!(places.as_array().unwrap().len(), 3);
+
+    // Another match once both agree.
+    host.send(json!({ "type": "table_again", "table_id": table_id }))
+        .await;
+    let waiting = table_snapshot(&mut friend, |t| t["again"]["votes"] == 1).await;
+    assert_eq!(waiting["again"]["needed"], 2);
+    friend
+        .send(json!({ "type": "table_again", "table_id": table_id }))
+        .await;
+    let again = table_snapshot(&mut host, |t| t["status"] == "playing").await;
+    assert_ne!(again["game"]["match_id"], first_match);
+    s.stop();
+}
+
+#[tokio::test]
+async fn table_links_peek_and_guests_cannot_host_tables() {
+    let s = start(":memory:").await;
+    let mut host = Client::login(s.addr, 1001, "Олег").await;
+    host.send(json!({ "type": "create_table", "request_id": "t1", "seats": 2 }))
+        .await;
+    let table_id = host.until(|m| m["type"] == "table_created").await["table_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // A duel-style invite link that points at a table.
+    let mut guest =
+        Client::login_guest(s.addr, "guest-key-0123456789abcdef0123456789", "Гость").await;
+    guest
+        .send(json!({ "type": "peek_room", "room_id": table_id }))
+        .await;
+    assert_eq!(
+        guest.until(|m| m["type"] == "table_preview").await["preview"]["seats"],
+        2
+    );
+    guest
+        .send(json!({ "type": "create_table", "request_id": "g1", "seats": 3 }))
+        .await;
+    assert_eq!(
+        guest.until(|m| m["type"] == "server_error").await["code"],
+        "guest_cannot_host"
+    );
+    guest
+        .send(json!({ "type": "join_table", "table_id": table_id }))
+        .await;
+    table_snapshot(&mut guest, |t| t["my_seat"] == 1).await;
+    // Full now.
+    let mut late = Client::login(s.addr, 3003, "Поздний").await;
+    late.send(json!({ "type": "join_table", "table_id": table_id }))
+        .await;
+    assert_eq!(
+        late.until(|m| m["type"] == "server_error").await["code"],
+        "room_full"
+    );
+    s.stop();
+}
+
+#[tokio::test]
+async fn a_table_survives_a_server_restart() {
+    let dir = std::env::temp_dir().join(format!("blitz-table-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db = dir.join("t.sqlite3");
+    let db = db.to_str().unwrap();
+    let _ = std::fs::remove_file(db);
+    let s = start(db).await;
+    let mut host = Client::login(s.addr, 1001, "Олег").await;
+    host.send(json!({ "type": "create_table", "request_id": "t1", "seats": 3 }))
+        .await;
+    let table_id = host.until(|m| m["type"] == "table_created").await["table_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    host.send(json!({ "type": "table_add_bot", "table_id": table_id, "opponent": "tight" }))
+        .await;
+    host.send(json!({ "type": "table_add_bot", "table_id": table_id, "opponent": "novice" }))
+        .await;
+    host.send(json!({ "type": "start_table", "table_id": table_id }))
+        .await;
+    let before = table_snapshot(&mut host, |t| t["status"] == "playing").await;
+    s.stop();
+
+    let s = start(db).await;
+    let mut host = Client::login(s.addr, 1001, "Олег").await;
+    let after = table_snapshot(&mut host, |t| t["status"] == "playing").await;
+    assert_eq!(after["game"]["match_id"], before["game"]["match_id"]);
+    s.stop();
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -10,11 +10,15 @@ interface Props {
   initial: Opponent[];
   onStart: (bots: Opponent[]) => void;
   onClose: () => void;
+  /** Gather friends at a server table of `seats`; absent without a server. */
+  onCreateOnline?: (seats: number) => void;
 }
 
 /** "Третий не лишний": pick two or three bots to share the table with. */
-export function TablePicker({ initial, onStart, onClose }: Props) {
+export function TablePicker({ initial, onStart, onClose, onCreateOnline }: Props) {
   const [picked, setPicked] = useState<Opponent[]>(initial);
+  const [mode, setMode] = useState<'bots' | 'friends'>('bots');
+  const [seats, setSeats] = useState(3);
   const toggle = (id: Opponent) =>
     setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : p.length < MAX_BOTS ? [...p, id] : p));
   const ready = picked.length >= MIN_BOTS;
@@ -23,42 +27,88 @@ export function TablePicker({ initial, onStart, onClose }: Props) {
   return (
     <Dialog title="Третий не лишний" onClose={onClose}>
       <h2 className="surface__title">Третий не лишний</h2>
-      <p className="surface__text">
-        Вы и ещё {MIN_BOTS}–{MAX_BOTS} бота за одним столом, {hands} раздач. Побеждает тот, у кого к концу больше всех
-        фишек.
-      </p>
-      <div className="picker" role="group" aria-label="Соперники за столом">
-        {OPPONENTS.map((o) => {
-          const on = picked.includes(o.id);
-          const full = !on && picked.length >= MAX_BOTS;
-          return (
-            <button
-              key={o.id}
-              className={`picker__item${on ? ' is-selected' : ''}`}
-              role="checkbox"
-              aria-checked={on}
-              aria-disabled={full}
-              disabled={full}
-              onClick={() => toggle(o.id)}
-            >
-              <BotAvatar color={o.color} />
-              <span className="picker__body">
-                <span className="picker__head">
-                  <span className="picker__name">{o.name}</span>
-                  <Difficulty level={o.difficulty} />
-                </span>
-                <span className="picker__style">{o.style}</span>
-              </span>
-              <span className={`picker__check${on ? ' is-on' : ''}`} aria-hidden="true">
-                {on ? '✓' : ''}
-              </span>
-            </button>
-          );
-        })}
-      </div>
-      <button className="btn btn--primary btn--block picker__go" disabled={!ready} onClick={() => onStart(picked)}>
-        {ready ? `Сесть за стол (${picked.length + 1} игрока)` : `Выберите ещё ${MIN_BOTS - picked.length}`}
-      </button>
+      {onCreateOnline && (
+        <div className="segmented" role="tablist" aria-label="С кем играть">
+          <button
+            role="tab"
+            aria-selected={mode === 'bots'}
+            className={mode === 'bots' ? 'is-on' : ''}
+            onClick={() => setMode('bots')}
+          >
+            С ботами
+          </button>
+          <button
+            role="tab"
+            aria-selected={mode === 'friends'}
+            className={mode === 'friends' ? 'is-on' : ''}
+            onClick={() => setMode('friends')}
+          >
+            С друзьями
+          </button>
+        </div>
+      )}
+      {mode === 'friends' && onCreateOnline ? (
+        <>
+          <p className="surface__text">
+            Соберите друзей за одним столом: каждый играет со своего телефона. Пустые места можно отдать ботам.
+          </p>
+          <div className="segmented" role="radiogroup" aria-label="Мест за столом">
+            {[3, 4].map((n) => (
+              <button
+                key={n}
+                role="radio"
+                aria-checked={seats === n}
+                className={seats === n ? 'is-on' : ''}
+                onClick={() => setSeats(n)}
+              >
+                {n} места
+              </button>
+            ))}
+          </div>
+          <button className="btn btn--primary btn--block picker__go" onClick={() => onCreateOnline(seats)}>
+            Собрать стол
+          </button>
+        </>
+      ) : (
+        <>
+          <p className="surface__text">
+            Вы и ещё {MIN_BOTS}–{MAX_BOTS} бота за одним столом, {hands} раздач. Побеждает тот, у кого к концу больше
+            всех фишек.
+          </p>
+          <div className="picker" role="group" aria-label="Соперники за столом">
+            {OPPONENTS.map((o) => {
+              const on = picked.includes(o.id);
+              const full = !on && picked.length >= MAX_BOTS;
+              return (
+                <button
+                  key={o.id}
+                  className={`picker__item${on ? ' is-selected' : ''}`}
+                  role="checkbox"
+                  aria-checked={on}
+                  aria-disabled={full}
+                  disabled={full}
+                  onClick={() => toggle(o.id)}
+                >
+                  <BotAvatar color={o.color} />
+                  <span className="picker__body">
+                    <span className="picker__head">
+                      <span className="picker__name">{o.name}</span>
+                      <Difficulty level={o.difficulty} />
+                    </span>
+                    <span className="picker__style">{o.style}</span>
+                  </span>
+                  <span className={`picker__check${on ? ' is-on' : ''}`} aria-hidden="true">
+                    {on ? '✓' : ''}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          <button className="btn btn--primary btn--block picker__go" disabled={!ready} onClick={() => onStart(picked)}>
+            {ready ? `Сесть за стол (${picked.length + 1} игрока)` : `Выберите ещё ${MIN_BOTS - picked.length}`}
+          </button>
+        </>
+      )}
     </Dialog>
   );
 }

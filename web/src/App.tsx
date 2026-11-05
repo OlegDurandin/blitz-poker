@@ -25,6 +25,7 @@ import { Rules } from './screens/Rules';
 import { Stats, matchDate, matchLabel } from './screens/Stats';
 import { EngineError, SaveError } from './screens/SaveError';
 import { Table } from './screens/Table';
+import { TableOnline } from './screens/TableOnline';
 
 type Screen =
   | { name: 'loading' }
@@ -34,6 +35,8 @@ type Screen =
   /** "Третий не лишний": a table with bots, and its standings. */
   | { name: 'ring' }
   | { name: 'ring_result' }
+  /** A table with friends on the server: `invite` from a link or code, else this player hosts. */
+  | { name: 'table_online'; invite: string | null; seats: number }
   | { name: 'stats' }
   /** `invite`: room id from an invite link; null when this player hosts. */
   | { name: 'duel'; invite: string | null; byCode?: boolean }
@@ -59,7 +62,7 @@ export function App() {
   const [tablePickerOpen, setTablePickerOpen] = useState(false);
   const game = useGame({ paused: menuOpen || rulesOpen || confirm !== null });
   const ring = useTableGame({ paused: menuOpen || rulesOpen || confirm !== null });
-  const duel = useDuel(screen.name === 'duel');
+  const duel = useDuel(screen.name === 'duel' || screen.name === 'table_online');
 
   const boot = useCallback(() => {
     setScreen({ name: 'loading' });
@@ -113,6 +116,10 @@ export function App() {
     if (room && room.room_id === id) return;
     if (room && room.status !== 'waiting' && room.status !== 'closed') return;
     if (room) duelRef.current.leave();
+    // A table in play is never interrupted either; an empty lobby is kept.
+    const table = duelRef.current.state.table;
+    if (table && table.table_id === id) return;
+    if (table && table.status !== 'lobby' && table.status !== 'closed') return;
     track('duel_opened', { source: 'invite' });
     setScreen({ name: 'duel', invite: id });
   }, []);
@@ -148,6 +155,9 @@ export function App() {
     }
     setTablePickerOpen(true);
   };
+
+  const canHostOnline = Boolean(PVP_URL) && (platform.canHost || devUserId() !== null);
+  const openTable = useCallback((id: string) => setScreen({ name: 'table_online', invite: id, seats: 3 }), []);
 
   const startTable = (bots: Opponent[]) => {
     setTablePickerOpen(false);
@@ -380,6 +390,23 @@ export function App() {
           enterCode={Boolean(screen.byCode)}
           onOpenInvite={openInvite}
           onRules={() => setRulesOpen(true)}
+          onOpenTable={openTable}
+          onExit={() => {
+            platform.clearLaunchRoom();
+            duel.reset();
+            setScreen({ name: 'home' });
+          }}
+        />
+      );
+      break;
+    case 'table_online':
+      content = (
+        <TableOnline
+          key={screen.invite ?? `host-${screen.seats}`}
+          duel={duel}
+          inviteId={screen.invite}
+          seats={screen.seats}
+          onRules={() => setRulesOpen(true)}
           onExit={() => {
             platform.clearLaunchRoom();
             duel.reset();
@@ -482,7 +509,20 @@ export function App() {
       )}
 
       {tablePickerOpen && (
-        <TablePicker initial={tableStorage.loadBots()} onStart={startTable} onClose={() => setTablePickerOpen(false)} />
+        <TablePicker
+          initial={tableStorage.loadBots()}
+          onStart={startTable}
+          onClose={() => setTablePickerOpen(false)}
+          onCreateOnline={
+            canHostOnline
+              ? (seats) => {
+                  setTablePickerOpen(false);
+                  track('duel_opened', { source: 'table' });
+                  setScreen({ name: 'table_online', invite: null, seats });
+                }
+              : undefined
+          }
+        />
       )}
 
       {menuOpen && screen.name !== 'ring' && view && (

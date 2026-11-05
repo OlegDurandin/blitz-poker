@@ -4,18 +4,22 @@ import type { TableView } from '../engine/types';
 import { describeHand, plural } from '../game/format';
 import { opponentInfo } from '../game/opponents';
 import type { TableStats } from '../game/tableStorage';
-import { seatName } from './Ring';
+import { seatName, type Person } from './Ring';
 
 interface Props {
   view: TableView;
-  stats: TableStats;
+  /** Solo tables: the player's record across tables. */
+  stats?: TableStats;
   onAgain: () => void;
   onHome: () => void;
+  /** Online: who sat where, and the vote for another match. */
+  online?: { people: (Person | null)[]; again: { votes: number; needed: number; mine: boolean } };
 }
 
 const PLACE_WORD = ['Первое', 'Второе', 'Третье', 'Четвёртое'];
 
-export function RingResult({ view, stats, onAgain, onHome }: Props) {
+export function RingResult({ view, stats, onAgain, onHome, online }: Props) {
+  const people = online?.people;
   const r = view.result!;
   const me = view.me;
   const place = r.places[me];
@@ -27,11 +31,11 @@ export function RingResult({ view, stats, onAgain, onHome }: Props) {
       ? 'Больше всех фишек к концу стола'
       : behind.length === 0
         ? 'В этот раз стол оказался сильнее'
-        : `Позади: ${behind.map((i) => seatName(view, i)).join(', ')}`;
+        : `Позади: ${behind.map((i) => seatName(view, i, people)).join(', ')}`;
   const order = view.seats.map((_, i) => i).sort((a, b) => r.places[a] - r.places[b] || a - b);
   const n = r.hands_played;
   const best = r.best_hands[me];
-  const firsts = stats.places[0] ?? 0;
+  const firsts = stats?.places[0] ?? 0;
 
   return (
     <main className={`result result--${place === 1 ? 'win' : 'loss'}`}>
@@ -44,11 +48,21 @@ export function RingResult({ view, stats, onAgain, onHome }: Props) {
       <ol className="standings" aria-label="Итоговые места">
         {order.map((seat) => {
           const s = view.seats[seat];
+          const photo = people?.[seat]?.photo;
           return (
             <li key={seat} className={`standings__row${seat === me ? ' is-me' : ''}`}>
               <span className="standings__place">{r.places[seat]}</span>
-              {s.type === 'bot' ? <BotAvatar color={opponentInfo(s.opponent).color} /> : <span className="standings__you">Вы</span>}
-              <span className="standings__name">{seatName(view, seat)}</span>
+              {s.type === 'bot' ? (
+                <BotAvatar color={opponentInfo(s.opponent).color} />
+              ) : photo ? (
+                <img className="bot-avatar avatar-photo" src={photo} alt="" />
+              ) : (
+                <span className="standings__you">{seat === me ? 'Вы' : seatName(view, seat, people).slice(0, 1)}</span>
+              )}
+              <span className="standings__name">
+                {seatName(view, seat, people)}
+                {people?.[seat]?.gone && <span className="standings__note"> · ушёл</span>}
+              </span>
               <span className="scoreboard__chips">
                 <ChipIcon /> {r.final_stacks[seat]}
               </span>
@@ -75,7 +89,7 @@ export function RingResult({ view, stats, onAgain, onHome }: Props) {
             </span>
           </li>
         )}
-        {stats.played > 1 && (
+        {stats && stats.played > 1 && (
           <li>
             Первых мест за столами: {firsts} из {stats.played}
           </li>
@@ -83,11 +97,21 @@ export function RingResult({ view, stats, onAgain, onHome }: Props) {
       </ul>
 
       <div className="result__actions">
-        <button className="btn btn--primary btn--hero" onClick={onAgain}>
-          Сыграть ещё стол
-        </button>
+        {online ? (
+          <button className="btn btn--primary btn--hero" disabled={online.again.mine || online.again.needed < 1} onClick={onAgain}>
+            {online.again.mine
+              ? `Ждём остальных · ${online.again.votes} из ${online.again.needed}`
+              : online.again.votes > 0
+                ? `Ещё раз · ${online.again.votes} из ${online.again.needed} готовы`
+                : 'Сыграть ещё раз'}
+          </button>
+        ) : (
+          <button className="btn btn--primary btn--hero" onClick={onAgain}>
+            Сыграть ещё стол
+          </button>
+        )}
         <button className="btn btn--ghost btn--block" onClick={onHome}>
-          На главную
+          {online ? 'Выйти из-за стола' : 'На главную'}
         </button>
       </div>
     </main>

@@ -20,10 +20,12 @@ interface Props {
   enterCode?: boolean;
   onExit: () => void;
   onRules: () => void;
+  /** The link or code led to a table of 3–4, not a duel room. */
+  onOpenTable?: (tableId: string) => void;
 }
 
 /** Re-renders a few times a second while countdowns are on screen. */
-function useTicker(on: boolean) {
+export function useTicker(on: boolean) {
   const [, setTick] = useState(0);
   useEffect(() => {
     if (!on) return;
@@ -32,7 +34,7 @@ function useTicker(on: boolean) {
   }, [on]);
 }
 
-function Avatar({ slot, size = 56 }: { slot: { name: string; photo: string | null } | null; size?: number }) {
+export function Avatar({ slot, size = 56 }: { slot: { name: string; photo: string | null } | null; size?: number }) {
   if (slot?.photo) return <img className="duel-avatar" src={slot.photo} alt="" width={size} height={size} />;
   return (
     <span className="duel-avatar duel-avatar--empty" style={{ width: size, height: size }} aria-hidden="true">
@@ -41,7 +43,7 @@ function Avatar({ slot, size = 56 }: { slot: { name: string; photo: string | nul
   );
 }
 
-function Center({ title, text, children }: { title: string; text?: string; children?: React.ReactNode }) {
+export function Center({ title, text, children }: { title: string; text?: string; children?: React.ReactNode }) {
   return (
     <main className="center-screen duel">
       <h1 className="center-screen__title">{title}</h1>
@@ -117,8 +119,13 @@ function PasteInvite({
   );
 }
 
-export function Duel({ duel, inviteRoomId, onOpenInvite, enterCode = false, onExit, onRules }: Props) {
+export function Duel({ duel, inviteRoomId, onOpenInvite, enterCode = false, onExit, onRules, onOpenTable }: Props) {
   const { state } = duel;
+  // A table answered the link or code: its own screen takes over.
+  const tableId = state.tablePreview?.table_id;
+  useEffect(() => {
+    if (tableId && onOpenTable) onOpenTable(tableId);
+  }, [tableId, onOpenTable]);
   const room = state.room;
   const asked = useRef(false);
   const [confirm, setConfirm] = useState<'surrender' | 'cancel' | null>(null);

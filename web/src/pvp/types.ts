@@ -1,6 +1,6 @@
 // Mirrors crates/pvp-server/src/room.rs and protocol.rs (protocol v1).
 
-import type { PlayerAction, PlayerView } from '../engine/types';
+import type { Opponent, PlayerAction, PlayerView, TableView } from '../engine/types';
 
 export type RoomStatus = 'waiting' | 'ready' | 'playing' | 'finished' | 'closed';
 export type CloseReason = 'cancelled_by_host' | 'expired' | 'left' | 'aborted';
@@ -56,6 +56,68 @@ export interface RoomPreview {
   status: RoomStatus;
 }
 
+// ---------- tables of 2–4: friends and bots (table_room.rs) ----------
+
+export type TableStatus = 'lobby' | 'playing' | 'finished' | 'closed';
+export type TableCloseReason = 'cancelled_by_host' | 'expired' | 'empty';
+
+export type TableSeatView =
+  | { type: 'empty' }
+  | { type: 'bot'; opponent: Opponent }
+  | {
+      type: 'player';
+      name: string;
+      photo: string | null;
+      connected: boolean;
+      reconnect_deadline_ms: number | null;
+      is_host: boolean;
+      is_me: boolean;
+      /** Left the table: folded out of this match. */
+      gone: boolean;
+      /** Voted for another match. */
+      again: boolean;
+    };
+
+export interface TableClock {
+  seat: number;
+  my_turn: boolean;
+  /** A person's deadline; null while a bot thinks. */
+  deadline_ms: number | null;
+  turn_ms: number;
+  bank_ms_me: number;
+}
+
+export interface TableRoomView {
+  table_id: string;
+  code: string;
+  status: TableStatus;
+  close_reason: TableCloseReason | null;
+  you_are_host: boolean;
+  my_seat: number;
+  expires_at_ms: number | null;
+  seats: TableSeatView[];
+  game: {
+    match_id: string;
+    state_version: number;
+    /** The engine's view for my seat (`view.me`). */
+    view: TableView;
+    clock: TableClock | null;
+    next_hand_at_ms: number | null;
+  } | null;
+  again: { votes: number; needed: number; mine: boolean };
+}
+
+export interface TablePreview {
+  table_id: string;
+  host_name: string;
+  host_photo: string | null;
+  joinable: boolean;
+  already_member: boolean;
+  status: TableStatus;
+  seats: number;
+  taken: number;
+}
+
 export type ClientMsg =
   | { type: 'create_room'; request_id: string }
   | { type: 'find_room'; code: string }
@@ -76,7 +138,23 @@ export type ClientMsg =
   | { type: 'accept_rematch'; room_id: string }
   | { type: 'decline_rematch'; room_id: string }
   | { type: 'surrender'; room_id: string }
-  | { type: 'heartbeat' };
+  | { type: 'heartbeat' }
+  | { type: 'create_table'; request_id: string; seats: number }
+  | { type: 'join_table'; table_id: string }
+  | { type: 'leave_table'; table_id: string }
+  | { type: 'table_add_bot'; table_id: string; opponent: Opponent }
+  | { type: 'table_remove_bot'; table_id: string; seat: number }
+  | { type: 'start_table'; table_id: string }
+  | {
+      type: 'table_action';
+      table_id: string;
+      match_id: string;
+      action_id: string;
+      expected_state_version: number;
+      action: PlayerAction;
+    }
+  | { type: 'table_again'; table_id: string }
+  | { type: 'request_table_snapshot'; table_id: string };
 
 export type ServerMsg = { v: number; server_seq: number } & (
   | { type: 'welcome'; user: { name: string; photo: string | null }; server_time_ms: number }
@@ -87,4 +165,7 @@ export type ServerMsg = { v: number; server_seq: number } & (
   | { type: 'action_rejected'; action_id: string; code: string; message: string }
   | { type: 'server_error'; code: string; message: string; room_id: string | null }
   | { type: 'pong'; server_time_ms: number }
+  | { type: 'table_created'; table_id: string; request_id: string; reused: boolean }
+  | { type: 'table_preview'; preview: TablePreview }
+  | { type: 'table_snapshot'; server_time_ms: number; table: TableRoomView }
 );

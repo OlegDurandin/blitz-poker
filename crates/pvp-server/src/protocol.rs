@@ -7,7 +7,8 @@
 //! game transition and must be echoed back with `player_action`.
 
 use crate::room::{RoomPreview, RoomView};
-use poker_core::PlayerAction;
+use crate::table_room::{TablePreview, TableRoomView};
+use poker_core::{Opponent, PlayerAction};
 use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -74,6 +75,47 @@ pub enum ClientMsg {
         room_id: String,
     },
     Heartbeat,
+
+    // ---------- tables of 2–4 (people and bots) ----------
+    /// Retrying with the same `request_id` returns the same table.
+    CreateTable {
+        request_id: String,
+        seats: usize,
+    },
+    JoinTable {
+        table_id: String,
+    },
+    /// Lobby: free the seat (the host closes the table). In a match: fold
+    /// and sit out. After it: leave the line-up.
+    LeaveTable {
+        table_id: String,
+    },
+    /// Host, lobby: seat a bot in the first free seat.
+    TableAddBot {
+        table_id: String,
+        opponent: Opponent,
+    },
+    TableRemoveBot {
+        table_id: String,
+        seat: usize,
+    },
+    StartTable {
+        table_id: String,
+    },
+    TableAction {
+        table_id: String,
+        match_id: String,
+        action_id: String,
+        expected_state_version: u64,
+        action: PlayerAction,
+    },
+    /// "Ещё раз": the same line-up again once every person agrees.
+    TableAgain {
+        table_id: String,
+    },
+    RequestTableSnapshot {
+        table_id: String,
+    },
 }
 
 impl ClientMsg {
@@ -98,7 +140,37 @@ impl ClientMsg {
             | ClientMsg::DeclineRematch { room_id }
             | ClientMsg::Surrender { room_id } => vec![room_id],
             ClientMsg::Heartbeat => vec![],
+            ClientMsg::CreateTable { request_id, .. } => vec![request_id],
+            ClientMsg::TableAction {
+                table_id,
+                match_id,
+                action_id,
+                ..
+            } => vec![table_id, match_id, action_id],
+            ClientMsg::JoinTable { table_id }
+            | ClientMsg::LeaveTable { table_id }
+            | ClientMsg::TableAddBot { table_id, .. }
+            | ClientMsg::TableRemoveBot { table_id, .. }
+            | ClientMsg::StartTable { table_id }
+            | ClientMsg::TableAgain { table_id }
+            | ClientMsg::RequestTableSnapshot { table_id } => vec![table_id],
         }
+    }
+
+    /// Messages about a table rather than a duel room.
+    pub fn is_table(&self) -> bool {
+        matches!(
+            self,
+            ClientMsg::CreateTable { .. }
+                | ClientMsg::JoinTable { .. }
+                | ClientMsg::LeaveTable { .. }
+                | ClientMsg::TableAddBot { .. }
+                | ClientMsg::TableRemoveBot { .. }
+                | ClientMsg::StartTable { .. }
+                | ClientMsg::TableAction { .. }
+                | ClientMsg::TableAgain { .. }
+                | ClientMsg::RequestTableSnapshot { .. }
+        )
     }
 }
 
@@ -146,6 +218,20 @@ pub enum ServerMsg {
     },
     Pong {
         server_time_ms: u64,
+    },
+    TableCreated {
+        table_id: String,
+        request_id: String,
+        /// The host's lobby that was still open, not a new one.
+        reused: bool,
+    },
+    /// Answers `find_room` / `peek_room` when the code or link is a table.
+    TablePreview {
+        preview: TablePreview,
+    },
+    TableSnapshot {
+        server_time_ms: u64,
+        table: Box<TableRoomView>,
     },
 }
 

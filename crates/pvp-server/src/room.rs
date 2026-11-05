@@ -39,6 +39,8 @@ pub struct Timings {
     pub hand_pause_ms: u64,
     /// Longer pause after an all-in, while the board is revealed.
     pub runout_pause_ms: u64,
+    /// How long a bot at a table "thinks", so people can follow the play.
+    pub bot_think_ms: u64,
 }
 
 impl Default for Timings {
@@ -51,6 +53,7 @@ impl Default for Timings {
             room_ttl_ms: 15 * 60_000,
             hand_pause_ms: 4_000,
             runout_pause_ms: 6_500,
+            bot_think_ms: 900,
         }
     }
 }
@@ -99,7 +102,7 @@ pub struct Member {
 }
 
 impl Member {
-    fn new(profile: Profile) -> Member {
+    pub(crate) fn new(profile: Profile) -> Member {
         Member {
             profile,
             ready: false,

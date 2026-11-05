@@ -2450,3 +2450,141 @@ p {
 .standings .scoreboard__chips {
   font-size: 20px;
 }
+
+.ring-seat.is-away .ring-seat__plate {
+  opacity: 0.5;
+}
+
+.tag--clock {
+  justify-self: center;
+  background: var(--bg-surface-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.tag--clock.is-low {
+  background: #6b2222;
+  color: #ffd9d9;
+}
+
+.standings__note {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+/* ---------- Table with friends: lobby ---------- */
+
+.lobby-seats {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-radius: 16px;
+  background: var(--bg-surface);
+  box-shadow: inset 0 0 0 1.5px var(--border);
+}
+
+.lobby-seat {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 60px;
+  padding: 8px 14px;
+}
+
+.lobby-seat + .lobby-seat {
+  border-top: 1.5px solid var(--border);
+}
+
+.lobby-seat--empty,
+.lobby-seat.is-away {
+  color: var(--text-secondary);
+}
+
+.lobby-seat .bot-avatar {
+  width: 40px;
+  height: 40px;
+}
+
+.lobby-seat__name {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  font-weight: 700;
+}
+
+.lobby-seat__note {
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.lobby-bots__list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.lobby-bots__add {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 4px 12px 4px 6px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--bg-surface-2);
+  box-shadow: inset 0 0 0 1.5px var(--border);
+  color: var(--text-primary);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.lobby-bots__add .bot-avatar {
+  width: 30px;
+  height: 30px;
+}
+
+.lobby-bots__add::before {
+  content: '+';
+  margin-left: 6px;
+  color: var(--text-secondary);
+}
+
+.segmented {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+  padding: 4px;
+  border-radius: 14px;
+  background: var(--bg-surface-2);
+}
+
+.segmented button {
+  flex: 1;
+  min-height: 40px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.segmented button.is-on {
+  background: var(--action-primary-fill);
+  color: #fff;
+}
+
+.ring-seat__initial {
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--bg-surface-2);
+  box-shadow: inset 0 0 0 1.5px var(--border);
+  color: var(--text-secondary);
+  font-size: 14px;
+  font-weight: 800;
+}

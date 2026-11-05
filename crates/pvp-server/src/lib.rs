@@ -13,5 +13,6 @@ pub mod protocol;
 pub mod room;
 pub mod server;
 pub mod store;
+pub mod table_room;
 pub mod telegram;
 pub mod vk;
