@@ -2219,3 +2219,234 @@ p {
   flex: 1;
   min-height: 44px;
 }
+
+/* ---------- "Третий не лишний": tables of 3–4 ---------- */
+
+.home__table {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  box-shadow: inset 0 0 0 1.5px var(--border);
+}
+
+.home__table-note {
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ring-row {
+  display: grid;
+  gap: 6px;
+  margin-top: 4px;
+  flex: none;
+}
+
+.ring-row--2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.ring-row--3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.ring-seat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 4px 2px;
+  border-radius: 14px;
+  transition: background-color 0.2s;
+}
+
+.ring-seat.is-turn {
+  background: rgb(57 110 242 / 0.14);
+}
+
+.ring-seat.is-folded .ring-seat__plate,
+.ring-seat.is-out .ring-seat__plate {
+  opacity: 0.55;
+}
+
+.ring-seat__cards {
+  display: flex;
+  gap: 3px;
+  min-height: calc(clamp(34px, 10vw, 44px) * 1.4);
+  align-items: center;
+}
+
+.ring-row--3 .ring-seat__cards .card--sm {
+  --w: clamp(30px, 8.6vw, 40px);
+}
+
+.ring-seat__status {
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ring-seat__plate {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 5px 8px;
+  border-radius: 12px;
+  background: var(--bg-surface);
+  box-shadow: inset 0 0 0 1.5px var(--border);
+}
+
+.ring-seat.is-turn .ring-seat__plate {
+  box-shadow: inset 0 0 0 2px var(--action-primary);
+}
+
+.ring-seat__plate .bot-avatar {
+  width: 28px;
+  height: 28px;
+}
+
+.ring-row--3 .ring-seat__plate .bot-avatar {
+  display: none;
+}
+
+.ring-seat__info {
+  min-width: 0;
+}
+
+.ring-seat .gain {
+  top: -12px;
+  right: -6px;
+  font-size: 13px;
+}
+
+.ring-seat__info .seat__name {
+  font-size: 13px;
+}
+
+.ring-seat__info .seat__name-text {
+  max-width: 6.5em;
+}
+
+.ring-seat__info .seat__stack {
+  font-size: 15px;
+}
+
+.ring-seat .bet {
+  padding: 2px 8px;
+  font-size: 13px;
+  background: var(--bg-felt-edge);
+}
+
+.ring-seat .tag {
+  justify-self: center;
+  padding: 3px 8px;
+  font-size: 12px;
+}
+
+.ring-out {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.seat.is-folded .seat__cards--hero {
+  opacity: 0.5;
+}
+
+.ring-banner__hand {
+  display: inline-flex;
+  align-items: center;
+}
+
+.picker__item:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.picker__check {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  align-self: center;
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 2px var(--border);
+  font-weight: 800;
+}
+
+.picker__check.is-on {
+  background: var(--action-primary-fill);
+  box-shadow: none;
+}
+
+.picker__go {
+  margin-top: 12px;
+}
+
+.standings {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-radius: 16px;
+  background: var(--bg-surface);
+  box-shadow: inset 0 0 0 1.5px var(--border);
+}
+
+.standings__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+}
+
+.standings__row + .standings__row {
+  border-top: 1.5px solid var(--border);
+}
+
+.standings__row.is-me {
+  background: rgb(57 110 242 / 0.12);
+}
+
+.standings__row .bot-avatar {
+  width: 32px;
+  height: 32px;
+}
+
+.standings__you {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--action-primary-fill);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.standings__place {
+  width: 1.4em;
+  color: var(--gold);
+  font-size: 20px;
+  font-weight: 800;
+  text-align: center;
+}
+
+.standings__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+}
+
+.standings .scoreboard__chips {
+  font-size: 20px;
+}

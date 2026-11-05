@@ -1,7 +1,7 @@
 use super::*;
 use crate::reference::{Policy, calling_station, random_legal, tight_aggressive};
 use poker_core::card::cards;
-use poker_core::{Match, MatchOutcome, Opponent, Phase};
+use poker_core::{Match, MatchOutcome, Opponent, Phase, Seat};
 
 fn c2(s: &str) -> [Card; 2] {
     let v = cards(s);

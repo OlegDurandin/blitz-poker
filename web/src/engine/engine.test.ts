@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { engine, initEngine } from './engine';
-import type { EngineResult, HandRecord, PlayerView, ReplayFrame } from './types';
+import { engine, initEngine, tableEngine } from './engine';
+import type { EngineResult, HandRecord, PlayerView, ReplayFrame, TableEngineResult } from './types';
 
 beforeAll(async () => {
   await initEngine(readFileSync(new URL('./generated/poker.wasm', import.meta.url)));
@@ -142,5 +142,45 @@ describe('wasm engine', () => {
     res = ok(engine.act(res.state, { type: 'call' }));
     res = ok(engine.botAct(res.state));
     expect(res.bot_action).toEqual({ type: 'check' });
+  });
+});
+
+describe('wasm table engine', () => {
+  const okT = (res: TableEngineResult) => {
+    if (!res.ok) throw new Error(`${res.error.code}: ${res.error.message}`);
+    return res;
+  };
+  const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
+
+  it('plays a three-seat table to the standings, hiding bot cards', () => {
+    let res = okT(tableEngine.start(['station', 'alex'], 'fedcba9876543210'));
+    expect(res.view.seats.length).toBe(3);
+    expect(res.view.hands_total).toBe(9);
+    let steps = 0;
+    while (res.view.phase !== 'match_over') {
+      expect(++steps).toBeLessThan(1500);
+      const v = res.view;
+      expect(sum(v.stacks) + sum(v.bets) + v.pot).toBe(1800);
+      if (v.phase === 'in_hand') expect(v.shown.every((c) => c === null)).toBe(true);
+      if (v.phase === 'hand_over') {
+        res = okT(v.stacks[0] === 0 && !v.is_final_hand ? tableEngine.end(res.state) : tableEngine.next(res.state));
+      } else if (v.to_act !== v.me) {
+        res = okT(tableEngine.botAct(res.state));
+        expect(res.bot_seat).toBe(v.to_act);
+      } else {
+        res = okT(tableEngine.act(res.state, v.legal!.check ? { type: 'check' } : { type: 'call' }));
+      }
+    }
+    const places = [...res.view.result!.places].sort();
+    expect(places[0]).toBe(1);
+    expect(sum(res.view.result!.final_stacks)).toBe(1800);
+  });
+
+  it('rejects a tampered table', () => {
+    const res = okT(tableEngine.start(['tight', 'novice', 'aggressor']));
+    const state = structuredClone(res.state) as { stacks: number[] };
+    state.stacks[0] += 100;
+    const bad = tableEngine.load(state);
+    expect(bad.ok).toBe(false);
   });
 });

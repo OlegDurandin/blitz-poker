@@ -1,7 +1,17 @@
 // Loads the Rust engine (crates/poker-wasm) and exposes typed commands.
 // ABI: alloc(len) → ptr, call(ptr, len) → response length, out_ptr() → response.
 
-import type { EngineResult, HandRecord, HistoryResult, MatchState, Opponent, PlayerAction, ReplayResult } from './types';
+import type {
+  EngineResult,
+  HandRecord,
+  HistoryResult,
+  MatchState,
+  Opponent,
+  PlayerAction,
+  ReplayResult,
+  TableEngineResult,
+  TableState,
+} from './types';
 
 interface Exports {
   memory: WebAssembly.Memory;
@@ -58,4 +68,15 @@ export const engine = {
   history: (state: MatchState) => call<HistoryResult>({ cmd: 'history', state }),
   /** Public table states, event by event; never mutates any match. */
   replay: (hand: HandRecord) => call<ReplayResult>({ cmd: 'replay', hand }),
+};
+
+/** "Третий не лишний": the human (seat 0) against two or three bots. */
+export const tableEngine = {
+  start: (bots: Opponent[], seed: string = randomSeed()) => call<TableEngineResult>({ cmd: 'table_new', seed, bots }),
+  load: (state: TableState) => call<TableEngineResult>({ cmd: 'table_view', state }),
+  act: (state: TableState, action: PlayerAction) => call<TableEngineResult>({ cmd: 'table_act', state, action }),
+  botAct: (state: TableState) => call<TableEngineResult>({ cmd: 'table_bot_act', state }),
+  next: (state: TableState) => call<TableEngineResult>({ cmd: 'table_next', state }),
+  /** Only once the human is out of chips. */
+  end: (state: TableState) => call<TableEngineResult>({ cmd: 'table_end', state }),
 };

@@ -906,15 +906,26 @@ impl Table {
         })
     }
 
+    /// How long `seat` lasted: its stack, and for a busted seat the hand it
+    /// went out in and the stack it had then. Later and deeper is better.
+    fn standing(&self, seat: usize) -> (u32, u8, u32) {
+        if self.stacks[seat] > 0 {
+            return (self.stacks[seat], u8::MAX, 0);
+        }
+        self.history
+            .iter()
+            .rev()
+            .find(|h| h.start_stacks[seat] > 0)
+            .map_or((0, 0, 0), |h| (0, h.number, h.start_stacks[seat]))
+    }
+
     fn places(&self) -> Vec<u8> {
         let n = self.n();
         let stayed: Vec<usize> = (0..n).filter(|s| !self.left.contains(s)).collect();
         let mut places = vec![0u8; n];
         for &s in &stayed {
-            let better = stayed
-                .iter()
-                .filter(|&&o| self.stacks[o] > self.stacks[s])
-                .count();
+            let mine = self.standing(s);
+            let better = stayed.iter().filter(|&&o| self.standing(o) > mine).count();
             places[s] = better as u8 + 1;
         }
         // The last to leave ranks right after those who stayed.
@@ -922,6 +933,17 @@ impl Table {
             places[s] = (stayed.len() + i + 1) as u8;
         }
         places
+    }
+
+    /// Ends the match after a finished hand, before its last hand: a solo
+    /// player who has run out of chips need not watch the bots play on.
+    /// Places count as they stand.
+    pub fn end_now(&mut self) -> Result<(), EngineError> {
+        if self.phase != Phase::HandOver {
+            return Err(EngineError::WrongPhase);
+        }
+        self.finish_match();
+        Ok(())
     }
 
     fn finish_match(&mut self) {

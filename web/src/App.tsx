@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ConfirmDialog } from './components/Dialog';
 import { OpponentPicker } from './components/OpponentPicker';
+import { TablePicker } from './components/TablePicker';
 import { PauseMenu } from './components/PauseMenu';
 import type { Opponent } from './engine/types';
 import { engine, initEngine } from './engine/engine';
@@ -8,6 +9,8 @@ import { track } from './game/analytics';
 import { botName } from './game/opponents';
 import { completedMatches, storage, type ArchiveLoad } from './game/storage';
 import { useGame } from './game/useGame';
+import { tableStorage } from './game/tableStorage';
+import { useTableGame } from './game/useTableGame';
 import { PVP_URL, activeRoom, devUserId } from './pvp/config';
 import { platform } from './platform';
 import { useDuel } from './pvp/useDuel';
@@ -16,6 +19,8 @@ import { History } from './screens/History';
 import { Home } from './screens/Home';
 import { Replay } from './screens/Replay';
 import { Result } from './screens/Result';
+import { Ring } from './screens/Ring';
+import { RingResult } from './screens/RingResult';
 import { Rules } from './screens/Rules';
 import { Stats, matchDate, matchLabel } from './screens/Stats';
 import { EngineError, SaveError } from './screens/SaveError';
@@ -26,6 +31,9 @@ type Screen =
   | { name: 'home' }
   | { name: 'table' }
   | { name: 'result' }
+  /** "Третий не лишний": a table with bots, and its standings. */
+  | { name: 'ring' }
+  | { name: 'ring_result' }
   | { name: 'stats' }
   /** `invite`: room id from an invite link; null when this player hosts. */
   | { name: 'duel'; invite: string | null; byCode?: boolean }
@@ -34,7 +42,7 @@ type Screen =
   | { name: 'save_error'; code: string }
   | { name: 'engine_error' };
 
-type Confirm = 'quit' | 'restart' | null;
+type Confirm = 'quit' | 'restart' | 'quit_table' | null;
 
 /** Where the hand list was opened from: the just-finished match or the archive. */
 type HistorySource = 'result' | 'stats';
@@ -48,7 +56,9 @@ export function App() {
   const [archive, setArchive] = useState<ArchiveLoad | null>(null);
   const [opponent, setOpponent] = useState<Opponent>(() => storage.loadOpponent());
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [tablePickerOpen, setTablePickerOpen] = useState(false);
   const game = useGame({ paused: menuOpen || rulesOpen || confirm !== null });
+  const ring = useTableGame({ paused: menuOpen || rulesOpen || confirm !== null });
   const duel = useDuel(screen.name === 'duel');
 
   const boot = useCallback(() => {
@@ -94,7 +104,7 @@ export function App() {
   const queuedInvite = useRef<string | null>(null);
   const openInvite = useCallback((id: string) => {
     if (!PVP_URL) return;
-    if (['loading', 'table', 'save_error', 'engine_error'].includes(screenRef.current.name)) {
+    if (['loading', 'table', 'ring', 'save_error', 'engine_error'].includes(screenRef.current.name)) {
       queuedInvite.current = id;
       return;
     }
@@ -121,10 +131,30 @@ export function App() {
 
   // Saves already happen after every action; this covers the app going to background.
   useEffect(() => {
-    const onHide = () => document.visibilityState === 'hidden' && game.retrySave();
+    const onHide = () => {
+      if (document.visibilityState !== 'hidden') return;
+      game.retrySave();
+      ring.retrySave();
+    };
     document.addEventListener('visibilitychange', onHide);
     return () => document.removeEventListener('visibilitychange', onHide);
-  }, [game.retrySave]);
+  }, [game.retrySave, ring.retrySave]);
+
+  const onTable = () => {
+    if (tableStorage.load().kind !== 'none') {
+      if (ring.resume()) return setScreen({ name: 'ring' });
+      // An unreadable table is dropped rather than blocking the mode.
+      tableStorage.clear();
+    }
+    setTablePickerOpen(true);
+  };
+
+  const startTable = (bots: Opponent[]) => {
+    setTablePickerOpen(false);
+    if (ring.start(bots)) setScreen({ name: 'ring' });
+  };
+
+  const ringView = ring.session?.view;
 
   const toTable = (ok: unknown) => ok && setScreen({ name: 'table' });
 
@@ -196,6 +226,8 @@ export function App() {
   const orphaned =
     (screen.name === 'table' && !view) ||
     (screen.name === 'result' && !view?.result) ||
+    (screen.name === 'ring' && !ringView) ||
+    (screen.name === 'ring_result' && !ringView?.result) ||
     (screen.name === 'stats' && !archive) ||
     (screen.name === 'hands' && !historyHands) ||
     (screen.name === 'replay' && !replayHand);
@@ -260,8 +292,47 @@ export function App() {
           }
           opponent={opponent}
           onPickOpponent={() => setPickerOpen(true)}
+          onTable={onTable}
+          hasSavedTable={tableStorage.load().kind === 'ok'}
         />
       );
+      break;
+    case 'ring':
+      content = ringView ? (
+        <Ring
+          view={ringView}
+          paused={menuOpen || rulesOpen || confirm !== null}
+          notice={ring.notice}
+          onRetrySave={ring.retrySave}
+          onAct={ring.act}
+          onNext={() => {
+            const next = ring.nextHand();
+            if (next?.view.phase === 'match_over') setScreen({ name: 'ring_result' });
+          }}
+          onEnd={() => {
+            const next = ring.endNow();
+            if (next?.view.phase === 'match_over') setScreen({ name: 'ring_result' });
+          }}
+          onMenu={() => setMenuOpen(true)}
+        />
+      ) : null;
+      break;
+    case 'ring_result':
+      content = ringView?.result ? (
+        <RingResult
+          view={ringView}
+          stats={ring.stats}
+          onAgain={() => {
+            ring.leaveFinished();
+            setScreen({ name: 'home' });
+            setTablePickerOpen(true);
+          }}
+          onHome={() => {
+            ring.leaveFinished();
+            goHome();
+          }}
+        />
+      ) : null;
       break;
     case 'table':
       content = view ? (
@@ -376,7 +447,45 @@ export function App() {
     <div className="app">
       <div className="column">{content}</div>
 
-      {menuOpen && view && (
+      {menuOpen && screen.name === 'ring' && ringView && (
+        <PauseMenu
+          tutorial={false}
+          quitLabel="Завершить стол"
+          onResume={() => setMenuOpen(false)}
+          onRules={() => {
+            setMenuOpen(false);
+            setRulesOpen(true);
+          }}
+          onSaveExit={() => {
+            ring.saveAndExit();
+            goHome();
+          }}
+          onQuit={() => {
+            setMenuOpen(false);
+            setConfirm('quit_table');
+          }}
+        />
+      )}
+
+      {confirm === 'quit_table' && (
+        <ConfirmDialog
+          title="Завершить стол?"
+          text="Прогресс этого стола будет удалён. Стол будет учтён как прерванный."
+          cancelLabel="Остаться"
+          confirmLabel="Завершить"
+          onCancel={() => setConfirm(null)}
+          onConfirm={() => {
+            ring.abandon();
+            goHome();
+          }}
+        />
+      )}
+
+      {tablePickerOpen && (
+        <TablePicker initial={tableStorage.loadBots()} onStart={startTable} onClose={() => setTablePickerOpen(false)} />
+      )}
+
+      {menuOpen && screen.name !== 'ring' && view && (
         <PauseMenu
           tutorial={view.kind === 'tutorial'}
           onResume={() => setMenuOpen(false)}

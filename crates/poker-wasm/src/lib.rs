@@ -10,6 +10,7 @@
 //! 3. Read the response from `out_ptr()`.
 
 use bot::Personality;
+use poker_core::table::{SeatKind, Table, TableKind, TableView};
 use poker_core::{
     EngineError, HISTORY_SCHEMA_VERSION, HandRecord, Match, MatchKind, Opponent, PlayerAction,
     PlayerView, ReplayFrame, Seat, replay,
@@ -50,6 +51,45 @@ enum Request {
     Replay {
         hand: Box<HandRecord>,
     },
+    /// "Третий не лишний": the human in seat 0 against `bots` (2 or 3).
+    TableNew {
+        seed: String,
+        bots: Vec<Opponent>,
+    },
+    TableView {
+        state: Box<Table>,
+    },
+    TableAct {
+        state: Box<Table>,
+        action: PlayerAction,
+    },
+    /// The bot whose turn it is acts.
+    TableBotAct {
+        state: Box<Table>,
+    },
+    TableNext {
+        state: Box<Table>,
+    },
+    /// The human is out of chips: end the table now instead of watching.
+    TableEnd {
+        state: Box<Table>,
+    },
+}
+
+/// The human's seat at a solo table.
+const HERO: usize = 0;
+/// Bots at a solo table: "Третий не лишний" means at least two.
+const TABLE_BOTS: std::ops::RangeInclusive<usize> = 2..=3;
+
+#[derive(Serialize)]
+struct TableSuccess {
+    ok: bool,
+    state: Table,
+    view: TableView,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bot_action: Option<PlayerAction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bot_seat: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -104,12 +144,93 @@ fn load(state: &mut Match) -> Result<(), EngineError> {
     state.validate()
 }
 
+fn parse_seed(seed: &str) -> Result<u64, EngineError> {
+    u64::from_str_radix(seed.trim_start_matches("0x"), 16)
+        .map_err(|_| EngineError::CorruptSave("seed must be hex"))
+}
+
+/// A solo table: the human in seat 0, bots everywhere else.
+fn load_table(t: &Table) -> Result<(), EngineError> {
+    let shape = t.kind == TableKind::Solo
+        && t.seats[HERO] == SeatKind::Player
+        && t.seats[1..]
+            .iter()
+            .all(|s| matches!(s, SeatKind::Bot { .. }));
+    if !shape || !TABLE_BOTS.contains(&(t.seats.len().saturating_sub(1))) {
+        return Err(EngineError::CorruptSave("not a solo table"));
+    }
+    t.validate()
+}
+
+type TableStep = (Table, Option<(usize, PlayerAction)>);
+
+fn run_table(request: Request) -> Result<TableStep, EngineError> {
+    match request {
+        Request::TableNew { seed, bots } => {
+            if !TABLE_BOTS.contains(&bots.len()) {
+                return Err(EngineError::IllegalAction);
+            }
+            let mut seats = vec![SeatKind::Player];
+            seats.extend(bots.into_iter().map(|opponent| SeatKind::Bot { opponent }));
+            Ok((Table::solo(parse_seed(&seed)?, seats)?, None))
+        }
+        Request::TableView { state } => {
+            load_table(&state)?;
+            Ok((*state, None))
+        }
+        Request::TableAct { mut state, action } => {
+            load_table(&state)?;
+            state.apply(HERO, action)?;
+            Ok((*state, None))
+        }
+        Request::TableBotAct { mut state } => {
+            load_table(&state)?;
+            let seat = state.hand.to_act.ok_or(EngineError::NotYourTurn)?;
+            let SeatKind::Bot { opponent } = state.seats[seat] else {
+                return Err(EngineError::NotYourTurn);
+            };
+            let action = bot::decide_table(&state.view(seat), opponent, state.decision_seed());
+            state.apply(seat, action)?;
+            Ok((*state, Some((seat, action))))
+        }
+        Request::TableNext { mut state } => {
+            load_table(&state)?;
+            state.next_hand()?;
+            Ok((*state, None))
+        }
+        Request::TableEnd { mut state } => {
+            load_table(&state)?;
+            if state.stacks[HERO] > 0 {
+                return Err(EngineError::IllegalAction);
+            }
+            state.end_now()?;
+            Ok((*state, None))
+        }
+        _ => unreachable!("not a table command"),
+    }
+}
+
+fn table_response(result: Result<TableStep, EngineError>) -> String {
+    match result {
+        Ok((state, bot)) => {
+            let view = state.view(HERO);
+            serde_json::to_string(&TableSuccess {
+                ok: true,
+                state,
+                view,
+                bot_action: bot.map(|b| b.1),
+                bot_seat: bot.map(|b| b.0),
+            })
+            .expect("table serializes")
+        }
+        Err(e) => fail(e.code(), e.to_string()),
+    }
+}
+
 fn run(request: Request) -> Result<(Match, Option<PlayerAction>), EngineError> {
     match request {
         Request::NewMatch { seed, opponent } => {
-            let seed = u64::from_str_radix(seed.trim_start_matches("0x"), 16)
-                .map_err(|_| EngineError::CorruptSave("seed must be hex"))?;
-            Ok((Match::against(seed, opponent), None))
+            Ok((Match::against(parse_seed(&seed)?, opponent), None))
         }
         Request::NewTutorial => Ok((Match::new_tutorial(), None)),
         Request::View { mut state } => {
@@ -137,7 +258,14 @@ fn run(request: Request) -> Result<(Match, Option<PlayerAction>), EngineError> {
             state.next_hand()?;
             Ok((*state, None))
         }
-        Request::History { .. } | Request::Replay { .. } => unreachable!("handled in `handle`"),
+        Request::History { .. }
+        | Request::Replay { .. }
+        | Request::TableNew { .. }
+        | Request::TableView { .. }
+        | Request::TableAct { .. }
+        | Request::TableBotAct { .. }
+        | Request::TableNext { .. }
+        | Request::TableEnd { .. } => unreachable!("handled in `handle`"),
     }
 }
 
@@ -166,6 +294,12 @@ pub fn handle(request: &str) -> String {
                 Err(e) => fail("corrupt_save", e.0.to_string()),
             };
         }
+        table @ (Request::TableNew { .. }
+        | Request::TableView { .. }
+        | Request::TableAct { .. }
+        | Request::TableBotAct { .. }
+        | Request::TableNext { .. }
+        | Request::TableEnd { .. }) => return table_response(run_table(table)),
         other => other,
     };
     match run(request) {
@@ -345,6 +479,75 @@ mod tests {
         );
         let bad = send(json!({"cmd": "new_match", "seed": "07", "opponent": "robot"}));
         assert_eq!(bad["error"]["code"], "bad_request");
+    }
+
+    #[test]
+    fn plays_a_table_through_json() {
+        let mut res = send(
+            json!({"cmd": "table_new", "seed": "0000000000000abc", "bots": ["alex", "station"]}),
+        );
+        assert_eq!(res["ok"], true, "{res}");
+        assert_eq!(res["view"]["hands_total"], 9);
+        assert_eq!(res["view"]["me"], 0);
+        assert!(
+            res["state"]["hand"]["deck"].is_array(),
+            "state is opaque, not the view"
+        );
+        assert!(res["view"].get("deck").is_none());
+        let mut guard = 0;
+        while res["view"]["phase"] != "match_over" {
+            guard += 1;
+            assert!(guard < 1000);
+            let state = res["state"].clone();
+            let view = &res["view"];
+            res = if view["phase"] == "hand_over" {
+                send(json!({"cmd": "table_next", "state": state}))
+            } else if view["to_act"] != 0 {
+                let r = send(json!({"cmd": "table_bot_act", "state": state}));
+                assert_eq!(r["bot_seat"], view["to_act"]);
+                r
+            } else {
+                let action = if view["legal"]["check"] == true {
+                    "check"
+                } else {
+                    "fold"
+                };
+                send(json!({"cmd": "table_act", "state": state, "action": {"type": action}}))
+            };
+            assert_eq!(res["ok"], true, "{res}");
+        }
+        assert_eq!(res["view"]["result"]["places"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn table_rejects_wrong_shapes_and_turns() {
+        let one = send(json!({"cmd": "table_new", "seed": "01", "bots": ["alex"]}));
+        assert_eq!(one["error"]["code"], "illegal_action");
+        let start = send(json!({"cmd": "table_new", "seed": "02", "bots": ["tight", "novice"]}));
+        let state = start["state"].clone();
+        let r = if start["view"]["to_act"] == 0 {
+            send(json!({"cmd": "table_bot_act", "state": state}))
+        } else {
+            send(json!({"cmd": "table_act", "state": state, "action": {"type": "fold"}}))
+        };
+        assert_eq!(r["error"]["code"], "not_your_turn");
+        let mut cheat = start["state"].clone();
+        cheat["stacks"][0] = json!(5000);
+        assert_eq!(
+            send(json!({"cmd": "table_view", "state": cheat}))["error"]["code"],
+            "corrupt_save"
+        );
+        let early = send(json!({"cmd": "table_end", "state": start["state"]}));
+        assert_eq!(
+            early["error"]["code"], "illegal_action",
+            "the human still has chips"
+        );
+        let mut online = start["state"].clone();
+        online["kind"] = json!("online");
+        assert_eq!(
+            send(json!({"cmd": "table_view", "state": online}))["error"]["code"],
+            "corrupt_save"
+        );
     }
 
     #[test]

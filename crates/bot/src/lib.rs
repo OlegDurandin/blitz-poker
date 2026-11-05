@@ -21,11 +21,14 @@
 mod preflop_table;
 #[doc(hidden)]
 pub mod reference;
+mod table;
+
+pub use table::decide_table;
 
 use poker_core::card::full_deck;
 use poker_core::rng::Rng;
 use poker_core::{
-    ActionKind, ActionRecord, Card, LegalActions, Opponent, PlayerAction, PlayerView, Seat, Street,
+    ActionKind, ActionRecord, Card, LegalActions, Opponent, PlayerAction, PlayerView, Street,
     hand_value,
 };
 
@@ -201,7 +204,6 @@ fn passive(legal: &LegalActions) -> PlayerAction {
 }
 
 struct Situation {
-    me: Seat,
     pot_total: u32,
     max_bet: u32,
     to_call: u32,
@@ -231,7 +233,6 @@ impl Situation {
             .find(aggressive)
             .map(|a| a.seat);
         Situation {
-            me: v.me,
             pot_total,
             max_bet: v.bets[0].max(v.bets[1]),
             to_call,
@@ -352,7 +353,7 @@ fn preflop(
 
     // Facing a raise.
     let equity = felt_equity(v, st, rng);
-    let stack = v.stacks[s.me.idx()];
+    let stack = v.stacks[v.me.idx()];
     let committing = legal.call_is_all_in || s.to_call as f64 >= 0.35 * stack as f64;
     if committing {
         // Looser styles call off their stack lighter, but only by half as much.
@@ -407,7 +408,38 @@ fn postflop(
 ) -> PlayerAction {
     let equity = felt_equity(v, st, rng);
     let draw = v.street != Street::River && strong_draw(v.hole, &v.board);
-    let street = v.street;
+    let read = Read {
+        street: v.street,
+        equity,
+        strength: equity,
+        draw,
+        bluff_scale: 1.0,
+    };
+    play_postflop(&read, s, st, legal, rng)
+}
+
+/// How a postflop decision sees its hand.
+struct Read {
+    street: Street,
+    /// Chance to win the pot, compared with the price of a call.
+    equity: f64,
+    /// Equity on a heads-up scale, which sets bet and raise thresholds;
+    /// heads-up it is the equity itself (see `table::strength`).
+    strength: f64,
+    draw: bool,
+    /// Bluffs and semi-bluffs are this much rarer (more players, less fold equity).
+    bluff_scale: f64,
+}
+
+fn play_postflop(
+    r: &Read,
+    s: &Situation,
+    st: &Style,
+    legal: &LegalActions,
+    rng: &mut Rng,
+) -> PlayerAction {
+    let (equity, draw, street) = (r.strength, r.draw, r.street);
+    let bluff_mult = st.bluff * r.bluff_scale;
 
     if legal.check {
         if equity >= 0.85 {
@@ -430,7 +462,7 @@ fn postflop(
         }
         if draw {
             let base = if street == Street::Flop { 0.5 } else { 0.35 };
-            if rng.chance(p(base, st.bluff)) {
+            if rng.chance(p(base, bluff_mult)) {
                 let frac = rng_frac(rng, 0.5, 0.7) * st.size;
                 return sized(legal, s, frac, PlayerAction::Check);
             }
@@ -456,7 +488,7 @@ fn postflop(
             _ if s.opponent_checked => 0.12,
             _ => 0.05,
         };
-        if rng.chance(p(bluff, st.bluff)) {
+        if rng.chance(p(bluff, bluff_mult)) {
             let frac = if street == Street::River {
                 rng_frac(rng, 0.66, 1.0)
             } else {
@@ -476,7 +508,7 @@ fn postflop(
         let frac = rng_frac(rng, 0.6, 0.8) * st.size;
         return sized(legal, s, frac, PlayerAction::Call);
     }
-    if draw && street == Street::Flop && s.raises < 2 && rng.chance(p(0.12, st.bluff)) {
+    if draw && street == Street::Flop && s.raises < 2 && rng.chance(p(0.12, bluff_mult)) {
         return sized(legal, s, 0.7 * st.size, PlayerAction::Call);
     }
     let implied = if draw { 0.06 } else { 0.0 };
@@ -486,10 +518,10 @@ fn postflop(
     } else {
         st.call_bonus
     };
-    if equity + implied + bonus >= s.pot_odds + margin {
+    if r.equity + implied + bonus >= s.pot_odds + margin {
         return PlayerAction::Call;
     }
-    if s.raises == 1 && street != Street::River && rng.chance(p(0.025, st.bluff)) {
+    if s.raises == 1 && street != Street::River && rng.chance(p(0.025, bluff_mult)) {
         return sized(legal, s, 0.75 * st.size, PlayerAction::Fold);
     }
     PlayerAction::Fold

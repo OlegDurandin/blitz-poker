@@ -294,6 +294,26 @@ fn leaving_folds_and_ranks_below_everyone_who_stayed() {
 }
 
 #[test]
+fn later_bust_ranks_higher_and_end_now_keeps_places() {
+    // Seat 2 goes out in hand 1; seat 0 then in hand 2.
+    let mut t = setup(
+        &[30, 1750, 20],
+        0,
+        1,
+        &["7c 2h", "As Ad", "8c 3d"],
+        "Qh 9s 4d Js Ks",
+    );
+    act(&mut t, 0, raise_to(30));
+    act(&mut t, 1, PlayerAction::Call);
+    assert_eq!(t.phase, Phase::HandOver, "everyone else is all-in");
+    assert_eq!(t.stacks, [0, 1800, 0]);
+    // Both busted in the same hand: the one who started it deeper ranks higher.
+    t.end_now().unwrap();
+    assert_eq!(t.result.as_ref().unwrap().places, [2, 1, 3]);
+    assert_eq!(t.end_now(), Err(EngineError::WrongPhase));
+}
+
+#[test]
 fn equal_stacks_share_a_place() {
     let mut t = Table::solo(1, vec![P; 3]).unwrap();
     t.stacks = vec![700, 400, 700];

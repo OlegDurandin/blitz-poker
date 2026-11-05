@@ -7,7 +7,7 @@ import type { ActionRecord, PlayerAction, PlayerView, Seat } from '../engine/typ
 import { STREET_NAME, describeHand } from '../game/format';
 import { showdownMarks, showdownReason, type Focus } from '../game/showdown';
 import { botName, opponentInfo } from '../game/opponents';
-import { prefersReducedMotion } from '../game/motion';
+import { streetFor, useRunoutReveal } from '../game/runout';
 import type { TutorialStep } from '../game/storage';
 import { platform } from '../platform';
 
@@ -48,36 +48,6 @@ export function formatClock(ms: number): string {
 
 const IDX: Record<Seat, 0 | 1> = { human: 0, bot: 1 };
 
-/**
- * Board cards revealed so far during an all-in runout. The engine resolves the
- * hand at once; this only paces the reveal and can be skipped.
- */
-function useRunoutReveal(view: PlayerView) {
-  const key = `${view.match_id}:${view.hand_number}`;
-  const from = view.outcome?.runout_from ?? null;
-  const [progress, setProgress] = useState<{ key: string; count: number }>({ key: '', count: 5 });
-
-  useEffect(() => {
-    if (from === null) return;
-    let count = from;
-    setProgress({ key, count });
-    const step = prefersReducedMotion() ? 350 : 750;
-    const timer = window.setInterval(() => {
-      count = count < 3 ? 3 : count + 1;
-      setProgress({ key, count });
-      if (count >= 5) window.clearInterval(timer);
-    }, step);
-    return () => window.clearInterval(timer);
-  }, [key, from]);
-
-  const count = from === null ? view.board.length : progress.key === key ? progress.count : from;
-  return {
-    visible: Math.min(count, view.board.length),
-    revealing: from !== null && count < 5,
-    skip: () => setProgress({ key, count: 5 }),
-  };
-}
-
 function lastAction(view: PlayerView, seat: Seat): ActionRecord | null {
   for (let i = view.actions.length - 1; i >= 0; i--) {
     const a = view.actions[i];
@@ -93,7 +63,7 @@ export function Table(props: Props) {
   const tutorial = view.kind === 'tutorial';
   const duel = props.duel;
   const bot = duel?.name ?? botName(view.opponent);
-  const reveal = useRunoutReveal(view);
+  const reveal = useRunoutReveal(`${view.match_id}:${view.hand_number}`, view.outcome?.runout_from ?? null, view.board.length);
   const [raiseOpen, setRaiseOpen] = useState(false);
 
   const handOver = view.phase === 'hand_over';
@@ -315,10 +285,6 @@ export function Table(props: Props) {
       )}
     </div>
   );
-}
-
-function streetFor(boardLen: number) {
-  return boardLen >= 5 ? 'river' : boardLen === 4 ? 'turn' : boardLen === 3 ? 'flop' : 'preflop';
 }
 
 function dockContext(view: PlayerView, bot: string, revealing: boolean, paused: boolean, duel?: DuelTable): string {

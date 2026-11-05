@@ -6,9 +6,11 @@ interface Props {
   onRules: () => void;
   onSaveExit: () => void;
   onQuit: () => void;
+  /** Overrides "Завершить матч" (e.g. for a table). */
+  quitLabel?: string;
 }
 
-export function PauseMenu({ tutorial, onResume, onRules, onSaveExit, onQuit }: Props) {
+export function PauseMenu({ tutorial, onResume, onRules, onSaveExit, onQuit, quitLabel }: Props) {
   return (
     <Dialog title="Пауза" onClose={onResume}>
       <h2 className="surface__title">Пауза</h2>
@@ -23,7 +25,7 @@ export function PauseMenu({ tutorial, onResume, onRules, onSaveExit, onQuit }: P
           Сохранить и выйти
         </button>
         <button className="btn btn--ghost btn--block btn--danger-text" onClick={onQuit}>
-          {tutorial ? 'Пропустить обучение' : 'Завершить матч'}
+          {tutorial ? 'Пропустить обучение' : (quitLabel ?? 'Завершить матч')}
         </button>
       </div>
     </Dialog>

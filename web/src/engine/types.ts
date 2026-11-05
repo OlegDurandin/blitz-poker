@@ -197,3 +197,88 @@ export type EngineResult =
   | { ok: false; error: { code: EngineErrorCode; message: string } };
 
 export const SEAT_INDEX: Record<Seat, 0 | 1> = { human: 0, bot: 1 };
+
+// ---------- "Третий не лишний": a table of 3–4 (engine `table` module) ----------
+// Seats are absolute indices; the human is always seat 0 at a solo table.
+
+export type SeatKind = { type: 'player' } | { type: 'bot'; opponent: Opponent };
+
+export interface TableAction {
+  seat: number;
+  street: Street;
+  kind: ActionKind;
+  amount: number;
+  to: number;
+  all_in: boolean;
+}
+
+export interface PotShare {
+  amount: number;
+  eligible: number[];
+  winners: number[];
+}
+
+export interface TableOutcome {
+  by_fold: boolean;
+  ended_on: Street;
+  pot: number;
+  /** Main pot first, then side pots. */
+  pots: PotShare[];
+  awarded: number[];
+  net: number[];
+  /** Per seat: hands of the seats that reached the showdown, null for others. */
+  showdown: (ShownHand | null)[] | null;
+  runout_from: number | null;
+}
+
+export interface TableResult {
+  final_stacks: number[];
+  /** 1-based; equal stacks share a place. */
+  places: number[];
+  hands_played: number;
+  hands_won: number[];
+  ended_early: boolean;
+  best_hands: ({ category: Category; cards: Card[] } | null)[];
+}
+
+export interface TableView {
+  schema: number;
+  table_id: string;
+  kind: 'solo' | 'online';
+  seats: SeatKind[];
+  phase: Phase;
+  me: number;
+  hand_number: number;
+  hands_total: number;
+  sb: number;
+  bb: number;
+  button: number;
+  sb_seat: number;
+  bb_seat: number;
+  street: Street;
+  stacks: number[];
+  bets: number[];
+  pot: number;
+  dealt: boolean[];
+  folded: boolean[];
+  left: boolean[];
+  board: Card[];
+  hole: [Card, Card] | null;
+  /** Other seats' cards, only after a showdown. */
+  shown: ([Card, Card] | null)[];
+  to_act: number | null;
+  to_call: number;
+  legal: LegalActions | null;
+  actions: TableAction[];
+  outcome: TableOutcome | null;
+  is_final_hand: boolean;
+  next_blinds: [number, number] | null;
+  result: TableResult | null;
+}
+
+/** Opaque table snapshot; stored and passed back verbatim. */
+export type TableState = unknown;
+
+export type TableEngineResult =
+  | { ok: true; state: TableState; view: TableView; bot_action?: PlayerAction; bot_seat?: number }
+  | EngineFailure;

@@ -23,6 +23,9 @@ interface Props {
   onDuel?: () => void;
   /** "Войти по коду": a friend's room by its six digits. */
   onJoinByCode?: () => void;
+  /** "Третий не лишний": a table with two or three bots. */
+  onTable: () => void;
+  hasSavedTable: boolean;
 }
 
 export function Home(p: Props) {
@@ -68,6 +71,10 @@ export function Home(p: Props) {
             {p.justFinished ? 'Играть снова' : 'Начать игру'}
           </button>
         )}
+        <button className="btn btn--secondary btn--hero home__table" onClick={p.onTable}>
+          {p.hasSavedTable ? 'Продолжить стол' : 'Третий не лишний'}
+          <span className="home__table-note">{p.hasSavedTable ? 'стол с ботами' : 'стол на 3–4 игрока'}</span>
+        </button>
         {p.onDuel && (
           <button className="btn btn--secondary btn--hero home__duel" onClick={p.onDuel}>
             Играть с другом
