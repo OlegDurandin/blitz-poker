@@ -286,7 +286,7 @@ pub enum MatchOutcome {
 pub struct BestShown {
     pub category: Category,
     pub cards: [Card; 5],
-    value: HandValue,
+    pub(crate) value: HandValue,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -7,6 +7,7 @@ pub mod eval;
 pub mod history;
 pub mod perspective;
 pub mod rng;
+pub mod table;
 
 pub use card::{Card, Suit};
 pub use engine::{
@@ -17,4 +18,8 @@ pub use engine::{
 pub use eval::{BestHand, Category, HandValue, best_hand, hand_value};
 pub use history::{
     HISTORY_SCHEMA_VERSION, HandRecord, ReplayError, ReplayEvent, ReplayFrame, replay,
+};
+pub use table::{
+    MAX_SEATS, MIN_SEATS, PotShare, SeatKind, Table, TableKind, TableOutcome, TableResult,
+    TableView,
 };
