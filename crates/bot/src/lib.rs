@@ -328,7 +328,9 @@ fn preflop(
             let size = if eff > 16.0 { 2.5 * bb } else { 2.25 * bb } * st.size.max(0.8);
             return raise_to(legal, size as u32).unwrap_or(PlayerAction::Call);
         }
-        if top <= open + 0.15 && rng.chance(0.5) {
+        // Hands just outside the opening range sometimes limp; the worst 5%
+        // (7-2, 8-3 off…) always fold, whatever the style.
+        if top <= (open + 0.15).min(0.95) && rng.chance(0.5) {
             return PlayerAction::Call;
         }
         return PlayerAction::Fold;
@@ -374,7 +376,13 @@ fn preflop(
                 return a;
             }
         }
-        // Closing the action in the big blind is cheap: defend wide.
+        // Closing the action in the big blind is cheap: defend wide, but not
+        // the bottom of the range, where the equity estimate is too close to
+        // the price to trust. Looser styles defend more (the station: all).
+        let defend = (0.7 + st.call_bonus * 2.0).clamp(0.4, 1.0);
+        if top > defend {
+            return PlayerAction::Fold;
+        }
         return if equity + 0.04 + st.call_bonus >= s.pot_odds {
             PlayerAction::Call
         } else {

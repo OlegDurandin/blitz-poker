@@ -426,3 +426,137 @@ fn decisions_are_reproducible() {
         );
     }
 }
+
+// ---------- concrete spots: sensible choices in hand-built situations ----------
+
+/// Deck with the given hole cards and board: human, bot, human, bot, board…
+fn spot_deck(human: &str, bot: &str, board: &str) -> Vec<Card> {
+    let parse = |s: &str| -> Vec<Card> {
+        s.split_whitespace()
+            .map(|c| Card::parse(c).unwrap())
+            .collect()
+    };
+    let (h, b, board) = (parse(human), parse(bot), parse(board));
+    let mut d = vec![h[0], b[0], h[1], b[1]];
+    d.extend(&board);
+    for c in full_deck() {
+        if !d.contains(&c) {
+            d.push(c);
+        }
+    }
+    d
+}
+
+/// Share of `n` decisions by `who` in the spot that satisfy `ok`.
+fn share(
+    who: Opponent,
+    button: Seat,
+    cards: (&str, &str, &str),
+    script: &[(Seat, PlayerAction)],
+    ok: impl Fn(PlayerAction) -> bool,
+) -> f64 {
+    let mut m = Match::duel("spot".into(), button, &spot_deck(cards.0, cards.1, cards.2)).unwrap();
+    for &(seat, a) in script {
+        m.apply(seat, a).unwrap();
+    }
+    let v = m.view(Seat::Bot);
+    let n = 200u64;
+    let hits = (0..n)
+        .filter(|s| ok(decide(&v, Personality::Standard(who), s * 7919 + 1)))
+        .count();
+    hits as f64 / n as f64
+}
+
+const HU: Seat = Seat::Human;
+const BOT: Seat = Seat::Bot;
+
+#[test]
+fn worst_hands_fold_preflop() {
+    for who in Opponent::ALL {
+        let sb = share(who, BOT, ("As Ah", "7c 2d", "Kd 9s 4c 3h 2s"), &[], |a| {
+            a == PlayerAction::Fold
+        });
+        assert!(
+            sb > 0.99,
+            "{who:?} plays 7-2 from the small blind: fold {sb:.2}"
+        );
+    }
+    for who in [
+        Opponent::Alex,
+        Opponent::Tight,
+        Opponent::Aggressor,
+        Opponent::Novice,
+    ] {
+        let bb = share(
+            who,
+            HU,
+            ("As Kh", "7c 2d", "Kd 9s 4c 3h 2s"),
+            &[(HU, PlayerAction::RaiseTo { amount: 60 })],
+            |a| a == PlayerAction::Fold,
+        );
+        assert!(
+            bb > 0.99,
+            "{who:?} defends 7-2 against a raise: fold {bb:.2}"
+        );
+    }
+}
+
+#[test]
+fn premium_hands_are_played_for_value() {
+    for who in [Opponent::Alex, Opponent::Tight, Opponent::Aggressor] {
+        let aa = share(who, BOT, ("7c 2d", "As Ah", "Kd 9s 4c 3h 2s"), &[], |a| {
+            matches!(a, PlayerAction::RaiseTo { .. })
+        });
+        assert!(aa > 0.7, "{who:?} raises aces only {aa:.2}");
+    }
+    for who in Opponent::ALL {
+        let aks = share(
+            who,
+            HU,
+            ("9c 9d", "Ah Kh", "Qd 9s 4c 3h 2s"),
+            &[(HU, PlayerAction::RaiseTo { amount: 60 })],
+            |a| a != PlayerAction::Fold,
+        );
+        assert_eq!(aks, 1.0, "{who:?} folds A-K suited to a raise");
+    }
+}
+
+#[test]
+fn never_folds_the_nuts_and_folds_air_to_big_bets() {
+    use PlayerAction::{Call, Check, RaiseTo};
+    let river_nuts = [
+        (HU, RaiseTo { amount: 60 }),
+        (BOT, Call),
+        (BOT, Check),
+        (HU, RaiseTo { amount: 60 }),
+        (BOT, Call),
+        (BOT, Check),
+        (HU, RaiseTo { amount: 120 }),
+        (BOT, Call),
+        (BOT, Check),
+        (HU, RaiseTo { amount: 200 }),
+    ];
+    let air = [
+        (HU, RaiseTo { amount: 60 }),
+        (BOT, Call),
+        (BOT, Check),
+        (HU, RaiseTo { amount: 120 }),
+    ];
+    for who in Opponent::ALL {
+        let nuts = share(
+            who,
+            HU,
+            ("Kc Kd", "Ah 5h", "Kh 8h 2h 7c 3s"),
+            &river_nuts,
+            |a| a != PlayerAction::Fold,
+        );
+        assert_eq!(nuts, 1.0, "{who:?} folds the nut flush");
+        let fold_air = share(who, HU, ("Ah Ad", "8c 3d", "Ks Qh 2c 5d 9h"), &air, |a| {
+            a == PlayerAction::Fold
+        });
+        assert!(
+            fold_air > 0.85,
+            "{who:?} continues with air: fold {fold_air:.2}"
+        );
+    }
+}

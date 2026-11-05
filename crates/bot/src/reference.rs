@@ -23,7 +23,9 @@ pub fn random_legal(v: &PlayerView, seed: u64) -> PlayerAction {
     let l = v.legal.as_ref().expect("called on own turn");
     let mut rng = Rng::new(seed ^ 0xA11CE);
     let mut options = vec![];
-    if l.fold {
+    // Folding is always legal, but a free check is never given up: keeps this
+    // baseline comparable with measurements from before that rule.
+    if l.fold && !l.check {
         options.push(PlayerAction::Fold);
     }
     if l.check {
