@@ -1,15 +1,16 @@
-import { useEffect, useState } from 'react';
-import { BotAvatar } from '../components/icons';
+import { useState } from 'react';
+import { HandHistory } from '../components/HandHistory';
+import { SeatView, TableArena } from '../components/SeatView';
+import { LegalActions } from '../components/LegalActions';
+import { actionFeedback } from '../game/feedback';
 import { PlayingCard } from '../components/PlayingCard';
-import { RaiseSheet } from '../components/RaiseSheet';
-import { ActionTag, BetChip, DealerButton, Stack } from '../components/TableParts';
+import { BetChip } from '../components/TableParts';
 import type { ActionRecord, PlayerAction, PlayerView, Seat } from '../engine/types';
-import { STREET_NAME, describeHand } from '../game/format';
+import { STREET_NAME, describeHand, actionLabel } from '../game/format';
 import { showdownMarks, showdownReason, type Focus } from '../game/showdown';
 import { botName, opponentInfo } from '../game/opponents';
 import { streetFor, useRunoutReveal } from '../game/runout';
 import type { TutorialStep } from '../game/storage';
-import { platform } from '../platform';
 
 interface Props {
   view: PlayerView;
@@ -38,6 +39,7 @@ export interface DuelTable {
   nextHandInMs: number | null;
   /** An action is on its way to the server. */
   pending: boolean;
+  offline?: boolean;
 }
 
 /** "0:07" */
@@ -63,8 +65,8 @@ export function Table(props: Props) {
   const tutorial = view.kind === 'tutorial';
   const duel = props.duel;
   const bot = duel?.name ?? botName(view.opponent);
-  const reveal = useRunoutReveal(`${view.match_id}:${view.hand_number}`, view.outcome?.runout_from ?? null, view.board.length);
-  const [raiseOpen, setRaiseOpen] = useState(false);
+  const reveal = useRunoutReveal(`${view.match_id}:${view.hand_number}`, duel ? null : view.outcome?.runout_from ?? null, view.board.length);
+
 
   const handOver = view.phase === 'hand_over';
   const settled = handOver && !reveal.revealing;
@@ -75,14 +77,9 @@ export function Table(props: Props) {
   const stacks = view.stacks.map((s, i) => (reveal.revealing && outcome ? s - outcome.awarded[i] : s));
   const myTurn = view.phase === 'in_hand' && view.to_act === 'human' && view.legal !== null;
 
-  // A hand ending or a new hand starting closes a stale raise sheet.
-  useEffect(() => {
-    if (!myTurn) setRaiseOpen(false);
-  }, [myTurn]);
-
   const act = (action: PlayerAction) => {
-    platform.haptic();
-    setRaiseOpen(false);
+    if (paused || duel?.pending) return;
+    actionFeedback();
     if (tutorial && tutorialStep === 'action') props.onTutorialStep('result');
     props.onAct(action);
   };
@@ -97,10 +94,30 @@ export function Table(props: Props) {
   const board = view.board.slice(0, reveal.visible);
   const opponentCards = view.opponent_hole;
 
-  const hint = tutorial && !raiseOpen ? currentHint(tutorialStep, view, settled) : null;
+  const hint = tutorial ? currentHint(tutorialStep, view, settled) : null;
+
+  const renderSeat = (seat: Seat) => {
+    const mine = seat === 'human';
+    const index = IDX[seat];
+    const record = lastAction(view, seat);
+    const folded = view.actions.some(a => a.seat === seat && a.kind === 'fold');
+    const active = view.phase === 'in_hand' && view.to_act === seat;
+    const cards = mine ? view.hole : opponentCards;
+    return <SeatView name={mine ? 'Вы' : bot} mine={mine} photo={!mine ? duel?.photo : undefined}
+      botColor={!mine && !duel ? opponentInfo(view.opponent).color : undefined}
+      stack={stacks[index]} gain={settled ? outcome!.net[index] : 0} active={active} folded={folded}
+      allIn={view.phase === 'in_hand' && !folded && stacks[index] === 0}
+      disconnected={duel?.offline || (!mine && duel ? !duel.connected : false)}
+      badges={view.button === seat ? ['D', 'SB'] : ['BB']} winner={settled && (outcome?.awarded[index] ?? 0) > 0}
+      leftMs={active && duel?.clock?.mine === mine ? duel.clock.leftMs : null}
+      action={record && !['small_blind', 'big_blind'].includes(record.kind) ? actionLabel(record) : null}
+      cards={cards ? cards.map(c => <PlayingCard key={c} card={c} size={mine ? 'lg' : 'sm'} {...cardProps(c)} />) : !folded ? <><PlayingCard faceDown size="sm" /><PlayingCard faceDown size="sm" /></> : null}>
+      {view.bets[index] > 0 && <BetChip amount={view.bets[index]} who={mine ? 'Вы' : bot} />}
+    </SeatView>;
+  };
 
   return (
-    <div className="table-screen">
+    <div className={`table-screen${settled ? ' table-screen--result' : ''}`}>
       <header className="hud">
         <span className={`hud__hand${tutorial ? ' hud__hand--tutorial' : ''}`}>
           {tutorial ? 'Обучение' : `Раздача ${view.hand_number}/${view.hands_total}`}
@@ -109,14 +126,6 @@ export function Table(props: Props) {
           <span className="hud__blinds-word">Блайнды </span>
           {view.sb}/{view.bb}
         </span>
-        {duel?.clock && (
-          <span
-            className={`hud__clock${duel.clock.leftMs <= 5000 ? ' is-low' : ''}`}
-            aria-label={`${duel.clock.mine ? 'Ваше время' : `Время: ${bot}`} ${formatClock(duel.clock.leftMs)}`}
-          >
-            ⏱ {formatClock(duel.clock.leftMs)}
-          </span>
-        )}
         <button className="hud__menu" onClick={props.onMenu} aria-label={duel ? 'Меню' : 'Меню и пауза'}>
           <span aria-hidden="true">⋯</span>
         </button>
@@ -131,78 +140,17 @@ export function Table(props: Props) {
         </div>
       )}
 
-      <section className="seat seat--bot" aria-label={bot}>
-        <div className="seat__cards">
-          {opponentCards ? (
-            opponentCards.map((c) => <PlayingCard key={c} card={c} size="sm" {...cardProps(c)} />)
-          ) : (
-            <>
-              <PlayingCard faceDown size="sm" />
-              <PlayingCard faceDown size="sm" />
-            </>
-          )}
-        </div>
-        <div className="seat__plate">
-          {duel?.photo ? (
-            <img className="bot-avatar avatar-photo" src={duel.photo} alt="" />
-          ) : (
-            <BotAvatar color={duel ? '#8fb0ff' : opponentInfo(view.opponent).color} />
-          )}
-          <div>
-            <div className="seat__name">
-              <span className="seat__name-text">{bot}</span>
-              {view.button === 'bot' && <DealerButton />}
-            </div>
-            <Stack amount={stacks[1]} gain={settled ? outcome!.net[1] : 0} />
-          </div>
-        </div>
-        <ActionTag action={lastAction(view, 'bot')} thinking={!duel && view.phase === 'in_hand' && view.to_act === 'bot'} />
-      </section>
-
-      <section className={`felt${settled && outcome ? ' felt--result' : ''}`} aria-label="Стол">
-        <BetChip amount={view.bets[IDX.bot]} who={bot} />
-        <div className={`pot${potShown > 0 ? '' : ' is-empty'}`} aria-live="polite">
-          Банк {potShown}
-        </div>
+      <div className="table-scroll" role="region" aria-label="Стол и результат раздачи" tabIndex={0}>
+      <TableArena opponents={[renderSeat('bot')]} hero={renderSeat('human')}>
+        <div className="pot" aria-live="polite">Банк {potShown}</div>
         <div className="board" aria-label="Общие карты">
-          {Array.from({ length: 5 }, (_, i) =>
-            board[i] ? (
-              <PlayingCard key={board[i]} card={board[i]} size="md" {...cardProps(board[i])} />
-            ) : (
-              <PlayingCard key={`slot-${i}`} size="md" />
-            ),
-          )}
+          {Array.from({ length: 5 }, (_, i) => <PlayingCard key={board[i] ?? `slot-${i}`} card={board[i]} size="md" {...(board[i] ? cardProps(board[i]) : {})} />)}
         </div>
-        {settled && outcome ? (
-          <ResultBanner
-            view={view}
-            bot={bot}
-            focus={currentFocus}
-            onFocus={(f) => setFocus({ key: handKey, focus: f })}
-          />
-        ) : (
-          <div className="felt__street">{STREET_NAME[reveal.revealing ? streetFor(reveal.visible) : view.street]}</div>
-        )}
-        <BetChip amount={view.bets[IDX.human]} who="Вы" />
-      </section>
-
-      <section className="seat seat--human" aria-label="Вы">
-        <div className="seat__cards seat__cards--hero">
-          {view.hole.map((c) => (
-            <PlayingCard key={c} card={c} size="lg" {...cardProps(c)} />
-          ))}
-        </div>
-        <div className="seat__plate">
-          <div>
-            <div className="seat__name">
-              Вы
-              {view.button === 'human' && <DealerButton />}
-            </div>
-            <Stack amount={stacks[0]} gain={settled ? outcome!.net[0] : 0} />
-          </div>
-        </div>
-        <ActionTag action={lastAction(view, 'human')} />
-      </section>
+        <div className="felt__street">{settled ? (outcome?.by_fold ? 'Раздача завершена' : 'Вскрытие') : STREET_NAME[reveal.revealing ? streetFor(reveal.visible) : view.street]}</div>
+      </TableArena>
+      {settled && outcome && <><ResultBanner view={view} bot={bot} focus={currentFocus} onFocus={f => setFocus({ key: handKey, focus: f })} />
+        <HandHistory actions={view.actions.map(a => ({ ...a, name: a.seat === 'human' ? 'Вы' : bot }))} />
+      </>}
 
       {hint && (
         <TutorialHint
@@ -212,45 +160,15 @@ export function Table(props: Props) {
         />
       )}
 
+      </div>
+
       <div className="dock">
         <div className="dock__context" aria-live="polite">
           {dockContext(view, bot, reveal.revealing, paused, duel)}
         </div>
         <div className="dock__body">
           {myTurn && view.legal ? (
-            <div className="actions" aria-busy={duel?.pending || undefined}>
-              {view.legal.fold && (
-                <button className="btn btn--secondary btn--action" disabled={duel?.pending} onClick={() => act({ type: 'fold' })} aria-label="Сбросить карты">
-                  Сбросить
-                </button>
-              )}
-              {view.legal.check && (
-                <button className="btn btn--secondary btn--action" disabled={duel?.pending} onClick={() => act({ type: 'check' })} aria-label="Чек: пропустить ход без ставки">
-                  Чек
-                </button>
-              )}
-              {view.legal.call !== null && (
-                <button
-                  className="btn btn--secondary btn--action"
-                  disabled={duel?.pending}
-                  onClick={() => act({ type: 'call' })}
-                  aria-label={view.legal.call_is_all_in ? `Уравнять олл-ин ${view.legal.call}` : `Уравнять ${view.legal.call}`}
-                >
-                  {view.legal.call_is_all_in ? `Олл-ин ${view.legal.call}` : `Колл ${view.legal.call}`}
-                </button>
-              )}
-              {view.legal.raise && (
-                <button
-                  className="btn btn--primary btn--action"
-                  disabled={duel?.pending}
-                  onClick={() => setRaiseOpen(true)}
-                  aria-label={view.legal.raise.kind === 'bet' ? 'Сделать ставку' : 'Повысить ставку'}
-                  aria-haspopup="dialog"
-                >
-                  {view.legal.raise.kind === 'bet' ? 'Ставка' : 'Рейз'}
-                </button>
-              )}
-            </div>
+            <LegalActions legal={view.legal} disabled={paused || !!duel?.pending} turnKey={`${view.hand_number}:${view.actions.length}:${view.to_act}`} onAct={act} />
           ) : reveal.revealing ? (
             <button className="btn btn--secondary btn--block" onClick={reveal.skip}>
               Пропустить анимацию
@@ -276,18 +194,12 @@ export function Table(props: Props) {
         </div>
       </div>
 
-      {raiseOpen && myTurn && view.legal?.raise && (
-        <RaiseSheet
-          option={view.legal.raise}
-          onCancel={() => setRaiseOpen(false)}
-          onConfirm={(amount) => act({ type: 'raise_to', amount })}
-        />
-      )}
     </div>
   );
 }
 
 function dockContext(view: PlayerView, bot: string, revealing: boolean, paused: boolean, duel?: DuelTable): string {
+  if (duel?.offline) return 'Восстанавливаем соединение…';
   if (revealing) return 'Олл-ин: открываем карты';
   if (duel && !duel.connected && duel.reconnectInMs !== null) {
     return `${bot} переподключается… ${formatClock(duel.reconnectInMs)}`;
@@ -303,7 +215,7 @@ function dockContext(view: PlayerView, bot: string, revealing: boolean, paused: 
   }
   if (view.to_act === 'human') {
     if (duel?.pending) return 'Отправляем ход…';
-    return view.to_call > 0 ? `Ваш ход · к ответу: ${Math.min(view.to_call, view.stacks[0])}` : 'Ваш ход';
+    return view.to_call > 0 ? `К ответу: ${Math.min(view.to_call, view.stacks[0])}` : 'Можно сделать чек';
   }
   if (view.to_act === 'bot') {
     if (duel) return `Ход: ${bot}`;
@@ -369,6 +281,7 @@ function ResultBanner({
       <div className="banner__headline">
         <span aria-hidden="true">{icon}</span> {headline}
       </div>
+      <div className="awards">{o.awarded.map((amount, i) => amount > 0 && <span key={i}>{i === 0 ? 'Вы' : bot} <strong>+{amount}</strong></span>)}</div>
       {o.showdown ? (
         <div className="banner__detail">
           {/* Tapping a player shows only their five; tapping again shows both. */}

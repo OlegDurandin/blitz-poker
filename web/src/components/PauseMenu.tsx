@@ -1,3 +1,4 @@
+import { FeedbackSettings } from './FeedbackSettings';
 import { Dialog } from './Dialog';
 
 interface Props {
@@ -14,6 +15,7 @@ export function PauseMenu({ tutorial, onResume, onRules, onSaveExit, onQuit, qui
   return (
     <Dialog title="Пауза" onClose={onResume}>
       <h2 className="surface__title">Пауза</h2>
+      <FeedbackSettings />
       <div className="menu">
         <button className="btn btn--primary btn--block" onClick={onResume}>
           Продолжить

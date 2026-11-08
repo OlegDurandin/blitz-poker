@@ -4,6 +4,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { ConfirmDialog } from '../components/Dialog';
+import { SeatView, TableArena, relativeSeats } from '../components/SeatView';
+import { FeedbackSettings } from '../components/FeedbackSettings';
 import { BotAvatar } from '../components/icons';
 import type { Opponent } from '../engine/types';
 import { track } from '../game/analytics';
@@ -48,6 +50,7 @@ export function TableOnline({ duel, inviteId, seats, onExit, onRules }: Props) {
   const [menu, setMenu] = useState(false);
   const [confirm, setConfirm] = useState<'leave' | 'cancel' | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
+  const [botsOpen, setBotsOpen] = useState(false);
   useTicker(Boolean(table && table.status !== 'closed'));
   const offline = state.conn !== 'online';
 
@@ -78,7 +81,10 @@ export function TableOnline({ duel, inviteId, seats, onExit, onRules }: Props) {
 
   if (state.conn === 'failed') {
     return (
-      <Center title="Не удалось войти" text={state.connError ?? 'Попробуйте открыть игру заново.'}>
+      <Center title="Не удалось подключиться" text={state.connError ?? 'Попробуйте открыть игру заново.'}>
+        <button className="btn btn--primary btn--block" onClick={duel.reconnect}>
+          Повторить подключение
+        </button>
         <button className="btn btn--secondary btn--block" onClick={onExit}>
           На главную
         </button>
@@ -210,12 +216,14 @@ export function TableOnline({ duel, inviteId, seats, onExit, onRules }: Props) {
             clock: clock ? { seat: clock.seat, leftMs: clock.deadline_ms !== null ? clock.deadline_ms - now : null } : null,
             nextHandInMs: game.next_hand_at_ms ? game.next_hand_at_ms - now : null,
             pending: state.pending || offline || gone,
+            offline,
           }}
         />
         {menu && (
           <div className="overlay" onClick={() => setMenu(false)}>
             <div className="surface surface--sheet" role="dialog" aria-modal="true" aria-label="Меню" onClick={(e) => e.stopPropagation()}>
               <h2 className="surface__title">Стол</h2>
+              <FeedbackSettings />
               <div className="menu">
                 <button className="btn btn--primary btn--block" onClick={() => setMenu(false)}>
                   Вернуться к игре
@@ -265,6 +273,16 @@ export function TableOnline({ duel, inviteId, seats, onExit, onRules }: Props) {
   const free = table.seats.length - taken;
   const seatedBots = new Set(table.seats.flatMap((s) => (s.type === 'bot' ? [s.opponent] : [])));
   const expiresIn = table.expires_at_ms ? table.expires_at_ms - now : null;
+  const invite = async () => {
+    if (!link) { say(`Код: ${formatCode(table.code)}`); return; }
+    const shared = await platform.share(link);
+    track('duel_invite_shared', { native: shared, table: true });
+    if (!shared) say((await platform.copy(link)) ? 'Ссылка скопирована' : link);
+  };
+  const renderLobbySeat = (index: number) => {
+    const seat = table.seats[index];
+    return <LobbySeat key={index} seat={seat} offline={offline} canRemove={table.you_are_host && seat.type === 'bot'} canAdd={table.you_are_host} onRemove={() => duel.removeBot(index)} onAdd={() => setBotsOpen(true)} onInvite={() => void invite()} />;
+  };
   return (
     <main className="duel duel--lobby">
       <header className="screen-header">
@@ -279,50 +297,27 @@ export function TableOnline({ duel, inviteId, seats, onExit, onRules }: Props) {
         >
           ← {table.you_are_host && taken > 1 ? 'Отменить' : table.you_are_host ? 'Назад' : 'Выйти'}
         </button>
-        <h1 className="screen-header__title">Стол на {table.seats.length}</h1>
+        <h1 className="screen-header__title">Ваш стол</h1>
       </header>
 
       {offline && <div className="notice">Нет соединения, переподключаемся…</div>}
 
-      <ul className="lobby-seats" aria-label="Места за столом">
-        {table.seats.map((s, i) => (
-          <LobbySeat
-            key={i}
-            seat={s}
-            canRemove={table.you_are_host && s.type === 'bot'}
-            onRemove={() => duel.removeBot(i)}
-          />
-        ))}
-      </ul>
-
-      {table.you_are_host && free > 0 && (
-        <section className="lobby-bots" aria-label="Посадить бота">
-          <p className="duel__hint">Пустое место может занять бот:</p>
+      <div className="lobby-scroll">
+      <TableArena lobby opponents={relativeSeats(table.seats.length, table.my_seat).map(renderLobbySeat)} hero={renderLobbySeat(table.my_seat)}>
+        <p className="lobby-state">{free > 0 ? 'Собираем компанию' : 'Все за столом'}</p>
+        <strong className="lobby-count">{taken} из {table.seats.length}</strong>
+        <span className="felt__street">{table.you_are_host ? 'Вы решаете, когда начать' : 'Ждём начала игры'}</span>
+      </TableArena>
+      {botsOpen && table.you_are_host && free > 0 && (
+        <section className="lobby-bots" aria-label="Добавить бота">
+          <div className="lobby-bots__heading"><h2>Кого посадим?</h2><button className="btn btn--ghost btn--small" onClick={() => setBotsOpen(false)}>Закрыть</button></div>
           <div className="lobby-bots__list">
-            {OPPONENTS.filter((o) => !seatedBots.has(o.id)).map((o) => (
-              <button
-                key={o.id}
-                className="lobby-bots__add"
-                disabled={offline}
-                onClick={() => duel.addBot(o.id as Opponent)}
-                aria-label={`Посадить бота: ${o.name}, ${o.style}`}
-              >
-                <BotAvatar color={o.color} />
-                <span>{o.name.replace(/^Бот /, '')}</span>
-              </button>
-            ))}
+            {OPPONENTS.filter(o => !seatedBots.has(o.id)).map(o => <button key={o.id} className="lobby-bots__add" disabled={offline} onClick={() => { duel.addBot(o.id as Opponent); setBotsOpen(false); }} aria-label={`Добавить бота ${o.name}, ${o.style}`}><BotAvatar color={o.color} /><span>{o.name.replace(/^Бот /, '')}</span></button>)}
           </div>
         </section>
       )}
 
-      {table.you_are_host && free > 0 && (
-        <section className="duel__invite">
-          <p className="duel__text">
-            {link
-              ? `Отправьте друзьям ссылку${platform.label ? ` в ${platform.label}` : ''} или продиктуйте код.`
-              : 'Продиктуйте друзьям код стола: они введут его в игре.'}{' '}
-            Друг из другого мессенджера входит по коду.
-          </p>
+      <section className="duel__invite">
           <button
             className="duel-code"
             onClick={async () => {
@@ -331,12 +326,17 @@ export function TableOnline({ duel, inviteId, seats, onExit, onRules }: Props) {
             }}
             aria-label={`Код стола ${formatCode(table.code)}, нажмите, чтобы скопировать`}
           >
-            <span className="duel-code__label">Код стола</span>
+            <span className="duel-code__label">Код приглашения</span>
             <span className="duel-code__digits">{formatCode(table.code)}</span>
+            <span className="duel-code__copy">Скопировать</span>
           </button>
-          {link && (
+        </section>
+
+      </div>
+      <div className="lobby-controls">
+          {link && free > 0 && (
             <button
-              className="btn btn--secondary btn--block"
+              className="btn btn--primary btn--block"
               disabled={offline}
               onClick={async () => {
                 const shared = await platform.share(link);
@@ -344,19 +344,20 @@ export function TableOnline({ duel, inviteId, seats, onExit, onRules }: Props) {
                 if (!shared) say((await platform.copy(link)) ? 'Ссылка скопирована' : link);
               }}
             >
-              Пригласить
+              Пригласить друга
             </button>
           )}
-        </section>
-      )}
 
       {table.you_are_host ? (
-        <button className="btn btn--primary btn--hero" disabled={offline || taken < 2} onClick={duel.startTable}>
-          {taken < 2 ? 'Позовите друга или бота' : free > 0 ? `Начать: ${taken} за столом` : 'Начать игру'}
-        </button>
+        <div className="lobby-start">
+          <button className="btn btn--secondary btn--hero btn--block" disabled={offline || taken < 2} onClick={duel.startTable}>Начать игру{taken >= 2 ? ` · ${taken} игрока` : ''}</button>
+          {taken < 2 && <p className="duel__hint">Добавьте ещё одного игрока или бота</p>}
+        </div>
       ) : (
         <p className="duel__text">Ждём, когда хозяин стола начнёт игру…</p>
       )}
+
+      </div>
 
       {expiresIn !== null && expiresIn < 10 * 60_000 && (
         <p className="duel__hint">Стол закроется через {formatClock(expiresIn)}, если ничего не происходит</p>
@@ -385,44 +386,17 @@ export function TableOnline({ duel, inviteId, seats, onExit, onRules }: Props) {
   );
 }
 
-function LobbySeat({ seat, canRemove, onRemove }: { seat: TableSeatView; canRemove: boolean; onRemove: () => void }) {
-  if (seat.type === 'empty') {
-    return (
-      <li className="lobby-seat lobby-seat--empty">
-        <span className="duel-avatar duel-avatar--empty" style={{ width: 40, height: 40 }} aria-hidden="true">
-          ?
-        </span>
-        <span className="lobby-seat__name">Свободно</span>
-      </li>
-    );
-  }
+export function LobbySeat({ seat, canRemove, canAdd, offline, onRemove, onAdd, onInvite }: { seat: TableSeatView; canRemove: boolean; canAdd: boolean; offline: boolean; onRemove: () => void; onAdd: () => void; onInvite: () => void }) {
+  if (seat.type === 'empty') return <section className="empty-seat" aria-label="Свободное место">
+    <span className="empty-seat__icon" aria-hidden="true">+</span><strong>Свободно</strong>
+    {canAdd && <button disabled={offline} onClick={onAdd}>Добавить бота</button>}
+    <button disabled={offline} onClick={onInvite}>Пригласить</button>
+  </section>;
   if (seat.type === 'bot') {
-    const o = opponentInfo(seat.opponent);
-    return (
-      <li className="lobby-seat">
-        <BotAvatar color={o.color} />
-        <span className="lobby-seat__name">
-          {o.name}
-          <span className="lobby-seat__note">{o.style}</span>
-        </span>
-        {canRemove && (
-          <button className="btn btn--ghost btn--small" onClick={onRemove} aria-label={`Убрать: ${o.name}`}>
-            Убрать
-          </button>
-        )}
-      </li>
-    );
+    const bot = opponentInfo(seat.opponent);
+    return <SeatView name={bot.name} botColor={bot.color} action="Бот · готов">
+      {canRemove && <button className="seat-remove" disabled={offline} onClick={onRemove} aria-label={`Убрать бота ${bot.name}`}>Убрать</button>}
+    </SeatView>;
   }
-  return (
-    <li className={`lobby-seat${seat.connected ? '' : ' is-away'}`}>
-      <Avatar slot={seat} size={40} />
-      <span className="lobby-seat__name">
-        {seat.is_me ? 'Вы' : seat.name}
-        <span className="lobby-seat__note">
-          {seat.is_host ? 'хозяин стола' : 'игрок'}
-          {!seat.connected && ' · не в сети'}
-        </span>
-      </span>
-    </li>
-  );
+  return <SeatView name={seat.is_me ? 'Вы' : seat.name} mine={seat.is_me} photo={seat.photo} host={seat.is_host} disconnected={!seat.connected} gone={seat.gone} action="За столом" />;
 }

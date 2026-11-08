@@ -20,12 +20,17 @@ interface Profile {
 
 const HEARTBEAT_MS = 15_000;
 const MAX_BACKOFF_MS = 10_000;
+const CONNECT_TIMEOUT_MS = 15_000;
+const MAX_ATTEMPTS = 3;
 
 export class DuelConnection {
   private ws: WebSocket | null = null;
   private session: string | null = null;
   private heartbeat: number | undefined;
   private retryTimer: number | undefined;
+  private connectTimer: number | undefined;
+  private request: AbortController | null = null;
+  private generation = 0;
   private attempt = 0;
   private closed = false;
   /** serverNow ≈ Date.now() + offset, for countdowns. */
@@ -44,6 +49,9 @@ export class DuelConnection {
 
   stop(): void {
     this.closed = true;
+    this.generation += 1;
+    window.clearTimeout(this.connectTimer);
+    this.request?.abort();
     window.clearTimeout(this.retryTimer);
     window.clearInterval(this.heartbeat);
     this.ws?.close();
@@ -63,6 +71,7 @@ export class DuelConnection {
 
   private async post(path: string, body: object, bearer?: string): Promise<Response> {
     return fetch(`${this.base}${path}`, {
+      signal: this.request?.signal,
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}) },
       body: JSON.stringify(body),
@@ -96,28 +105,51 @@ export class DuelConnection {
 
   private async connect(): Promise<void> {
     if (this.closed) return;
+    const generation = ++this.generation;
+    this.request = new AbortController();
     this.handlers.onState('connecting');
+    this.connectTimer = window.setTimeout(() => {
+      if (this.closed || generation !== this.generation) return;
+      this.generation += 1;
+      this.request?.abort();
+      const ws = this.ws;
+      this.ws = null;
+      ws?.close();
+      this.retry();
+    }, CONNECT_TIMEOUT_MS);
     let ticket: string;
     try {
       ticket = await this.ticket();
     } catch (e) {
+      if (this.closed || generation !== this.generation) return;
+      window.clearTimeout(this.connectTimer);
       if (e instanceof AuthError) {
         this.handlers.onState('failed', e.message);
         return;
       }
       return this.retry();
     }
-    if (this.closed) return;
+    if (this.closed || generation !== this.generation) return;
     const url = `${this.base.replace(/^http/, 'ws')}/ws?ticket=${encodeURIComponent(ticket)}`;
-    const ws = new WebSocket(url);
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(url);
+    } catch {
+      window.clearTimeout(this.connectTimer);
+      this.handlers.onState('failed', 'Не удалось открыть соединение с игровым сервером. Проверьте адрес сервера.');
+      return;
+    }
     this.ws = ws;
     ws.onopen = () => {
+      if (this.closed || this.ws !== ws) return;
+      window.clearTimeout(this.connectTimer);
       this.attempt = 0;
       this.handlers.onState('online');
       window.clearInterval(this.heartbeat);
       this.heartbeat = window.setInterval(() => this.send({ type: 'heartbeat' }), HEARTBEAT_MS);
     };
     ws.onmessage = (e) => {
+      if (this.closed || this.ws !== ws) return;
       let msg: ServerMsg;
       try {
         msg = JSON.parse(e.data as string) as ServerMsg;
@@ -128,7 +160,8 @@ export class DuelConnection {
       this.handlers.onMessage(msg);
     };
     ws.onclose = (e) => {
-      if (this.ws !== ws) return;
+      if (this.closed || this.ws !== ws) return;
+      window.clearTimeout(this.connectTimer);
       window.clearInterval(this.heartbeat);
       this.ws = null;
       if (e.code === 4001) {
@@ -142,6 +175,10 @@ export class DuelConnection {
 
   private retry(): void {
     if (this.closed) return;
+    if (this.attempt >= MAX_ATTEMPTS - 1) {
+      this.handlers.onState('failed', 'Нет связи с игровым сервером. Проверьте интернет или попробуйте другую сеть, затем повторите подключение.');
+      return;
+    }
     this.handlers.onState('offline');
     const delay = Math.min(MAX_BACKOFF_MS, 500 * 2 ** this.attempt);
     this.attempt += 1;
@@ -150,7 +187,7 @@ export class DuelConnection {
 
   /** Reconnect now (e.g. "Переподключиться" after the session was replaced). */
   reconnect(): void {
-    window.clearTimeout(this.retryTimer);
+    this.stop();
     this.attempt = 0;
     this.closed = false;
     void this.connect();

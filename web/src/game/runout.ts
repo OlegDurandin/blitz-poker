@@ -10,7 +10,7 @@ export function useRunoutReveal(key: string, from: number | null, boardLength: n
   const [progress, setProgress] = useState<{ key: string; count: number }>({ key: '', count: 5 });
 
   useEffect(() => {
-    if (from === null) return;
+    if (from === null || prefersReducedMotion()) return;
     let count = from;
     setProgress({ key, count });
     const step = prefersReducedMotion() ? 350 : 750;
@@ -22,7 +22,7 @@ export function useRunoutReveal(key: string, from: number | null, boardLength: n
     return () => window.clearInterval(timer);
   }, [key, from]);
 
-  const count = from === null ? boardLength : progress.key === key ? progress.count : from;
+  const count = from === null || prefersReducedMotion() ? boardLength : progress.key === key ? progress.count : from;
   return {
     visible: Math.min(count, boardLength),
     revealing: from !== null && count < 5,

@@ -161,7 +161,16 @@ export function App() {
 
   const startTable = (bots: Opponent[]) => {
     setTablePickerOpen(false);
-    if (ring.start(bots)) setScreen({ name: 'ring' });
+    if (bots.length === 1) {
+      const against = bots[0];
+      setOpponent(against);
+      storage.saveOpponent(against);
+      if (storage.loadMatch().kind !== 'none') {
+        setConfirm('restart');
+      } else if (game.startMatch(against)) {
+        setScreen({ name: 'table' });
+      }
+    } else if (ring.start(bots)) setScreen({ name: 'ring' });
   };
 
   const ringView = ring.session?.view;
@@ -302,6 +311,8 @@ export function App() {
           }
           opponent={opponent}
           onPickOpponent={() => setPickerOpen(true)}
+          onResumeRoom={activeRoom.get() ? () => openInvite(activeRoom.get()!) : undefined}
+          onFriends={canHostOnline ? () => { track('duel_opened', { source: 'home_friends' }); setTablePickerOpen(true); } : undefined}
           onTable={onTable}
           hasSavedTable={tableStorage.load().kind === 'ok'}
         />
@@ -393,7 +404,7 @@ export function App() {
           onOpenTable={openTable}
           onExit={() => {
             platform.clearLaunchRoom();
-            duel.reset();
+            duel.reset(Boolean((duel.state.room && duel.state.room.status !== 'closed') || (duel.state.table && duel.state.table.status !== 'closed')));
             setScreen({ name: 'home' });
           }}
         />
@@ -409,7 +420,7 @@ export function App() {
           onRules={() => setRulesOpen(true)}
           onExit={() => {
             platform.clearLaunchRoom();
-            duel.reset();
+            duel.reset(Boolean((duel.state.room && duel.state.room.status !== 'closed') || (duel.state.table && duel.state.table.status !== 'closed')));
             setScreen({ name: 'home' });
           }}
         />
@@ -517,8 +528,10 @@ export function App() {
             canHostOnline
               ? (seats) => {
                   setTablePickerOpen(false);
-                  track('duel_opened', { source: 'table' });
-                  setScreen({ name: 'table_online', invite: null, seats });
+                  track('duel_opened', { source: seats === 2 ? 'table_duel' : 'table' });
+                  setScreen(seats === 2
+                    ? { name: 'duel', invite: null }
+                    : { name: 'table_online', invite: null, seats });
                 }
               : undefined
           }

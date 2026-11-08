@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { Opponent } from '../engine/types';
 import { OPPONENTS } from '../game/opponents';
-import { MAX_BOTS, MIN_BOTS } from '../game/tableStorage';
+import { MAX_BOTS } from '../game/tableStorage';
 import { Dialog } from './Dialog';
 import { BotAvatar } from './icons';
 import { Difficulty } from './OpponentPicker';
@@ -14,19 +14,18 @@ interface Props {
   onCreateOnline?: (seats: number) => void;
 }
 
-/** "Третий не лишний": pick two or three bots to share the table with. */
+/** Pick bots locally, or assemble a mixed group in an online lobby. */
 export function TablePicker({ initial, onStart, onClose, onCreateOnline }: Props) {
-  const [picked, setPicked] = useState<Opponent[]>(initial);
-  const [mode, setMode] = useState<'bots' | 'friends'>('bots');
-  const [seats, setSeats] = useState(3);
+  const [picked, setPicked] = useState<Opponent[]>(initial.slice(0, 1));
+  const [mode, setMode] = useState<'bots' | 'friends'>(onCreateOnline ? 'friends' : 'bots');
   const toggle = (id: Opponent) =>
-    setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : p.length < MAX_BOTS ? [...p, id] : p));
-  const ready = picked.length >= MIN_BOTS;
-  // Whole orbits: 3 seats play 9 hands, 4 seats 8 (engine `hands_for`).
-  const hands = picked.length === MAX_BOTS ? 8 : 9;
+    setPicked((p) => p.includes(id) ? p.filter(x => x !== id) : p.length < MAX_BOTS ? [...p, id] : p);
+  const ready = picked.length > 0;
+  // Heads-up has 8 hands; larger tables use whole orbits.
+  const hands = picked.length === 2 ? 9 : 8;
   return (
-    <Dialog title="Третий не лишний" onClose={onClose}>
-      <h2 className="surface__title">Третий не лишний</h2>
+    <Dialog title="Создать стол" onClose={onClose}>
+      <h2 className="surface__title">Создать стол</h2>
       {onCreateOnline && (
         <div className="segmented" role="tablist" aria-label="С кем играть">
           <button
@@ -50,30 +49,18 @@ export function TablePicker({ initial, onStart, onClose, onCreateOnline }: Props
       {mode === 'friends' && onCreateOnline ? (
         <>
           <p className="surface__text">
-            Соберите друзей за одним столом: каждый играет со своего телефона. Пустые места можно отдать ботам.
+            Приглашайте друзей и добавляйте ботов прямо за столом. Можно начать вдвоём или собрать компанию до 4 игроков.
           </p>
-          <div className="segmented" role="radiogroup" aria-label="Мест за столом">
-            {[3, 4].map((n) => (
-              <button
-                key={n}
-                role="radio"
-                aria-checked={seats === n}
-                className={seats === n ? 'is-on' : ''}
-                onClick={() => setSeats(n)}
-              >
-                {n} места
-              </button>
-            ))}
-          </div>
-          <button className="btn btn--primary btn--block picker__go" onClick={() => onCreateOnline(seats)}>
-            Собрать стол
+          <button className="btn btn--primary btn--block picker__go" onClick={() => onCreateOnline(4)}>
+            Создать стол
           </button>
         </>
       ) : (
         <>
           <p className="surface__text">
-            Вы и ещё {MIN_BOTS}–{MAX_BOTS} бота за одним столом, {hands} раздач. Побеждает тот, у кого к концу больше
-            всех фишек.
+            {ready
+              ? `Вы и ${picked.length} ${picked.length === 1 ? 'бот' : 'бота'} · ${hands} раздач`
+              : 'Выберите от 1 до 3 ботов'}
           </p>
           <div className="picker" role="group" aria-label="Соперники за столом">
             {OPPONENTS.map((o) => {
@@ -105,7 +92,7 @@ export function TablePicker({ initial, onStart, onClose, onCreateOnline }: Props
             })}
           </div>
           <button className="btn btn--primary btn--block picker__go" disabled={!ready} onClick={() => onStart(picked)}>
-            {ready ? `Сесть за стол (${picked.length + 1} игрока)` : `Выберите ещё ${MIN_BOTS - picked.length}`}
+            {ready ? `Сесть за стол (${picked.length + 1} игрока)` : 'Выберите хотя бы одного бота'}
           </button>
         </>
       )}

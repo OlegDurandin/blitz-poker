@@ -8,7 +8,7 @@ import { platform } from '../platform';
 import { PVP_URL, activeRoom, devUserId, guest } from './config';
 import { DuelConnection, type ConnState } from './connection';
 import type { Opponent } from '../engine/types';
-import type { RoomPreview, RoomView, ServerMsg, TablePreview, TableRoomView } from './types';
+import type { ClientMsg, RoomPreview, RoomView, ServerMsg, TablePreview, TableRoomView } from './types';
 
 export interface DuelState {
   conn: ConnState;
@@ -56,10 +56,13 @@ export function useDuel(active: boolean) {
   const restarting = useRef(false);
   const tableId = useRef<string | null>(null);
   const pendingJoinTable = useRef<string | null>(null);
+  // Keep the same request id until acknowledged, including across reconnects.
+  const pendingCreate = useRef<Extract<ClientMsg, { type: 'create_room' | 'create_table' }> | null>(null);
 
   const onMessage = useCallback((msg: ServerMsg) => {
     switch (msg.type) {
       case 'room_created':
+        if (pendingCreate.current?.request_id === msg.request_id) pendingCreate.current = null;
         roomId.current = msg.room_id;
         activeRoom.set(msg.room_id);
         setState((s) => ({ ...s, reused: Boolean(msg.reused) }));
@@ -82,6 +85,7 @@ export function useDuel(active: boolean) {
         });
         break;
       case 'table_created':
+        if (pendingCreate.current?.request_id === msg.request_id) pendingCreate.current = null;
         tableId.current = msg.table_id;
         activeRoom.set(msg.table_id);
         setState((s) => ({ ...s, reused: Boolean(msg.reused) }));
@@ -104,6 +108,7 @@ export function useDuel(active: boolean) {
         setState((s) => ({ ...s, pending: false, error: { code: msg.code, message: msg.message } }));
         break;
       case 'server_error':
+        pendingCreate.current = null;
         setState((s) => ({ ...s, error: { code: msg.code, message: msg.message } }));
         break;
       default:
@@ -113,6 +118,7 @@ export function useDuel(active: boolean) {
 
   useEffect(() => {
     if (!active || !PVP_URL) return;
+    setState((s) => ({ ...s, conn: 'connecting', connError: null }));
     let stopped = false;
     void platform.getUser().then((user) => {
       if (stopped) return;
@@ -123,6 +129,7 @@ export function useDuel(active: boolean) {
         onState: (s, error) => {
           setState((st) => ({ ...st, conn: s, connError: error ?? null }));
           if (s === 'online') {
+            if (pendingCreate.current) c.send(pendingCreate.current);
             if (pendingFind.current) {
               c.send({ type: 'find_room', code: pendingFind.current });
               pendingFind.current = null;
@@ -159,10 +166,14 @@ export function useDuel(active: boolean) {
     return ok;
   };
 
-  const reset = useCallback(() => {
+  const reset = useCallback((keepActiveRoom = false) => {
+    pendingCreate.current = null;
+    pendingJoin.current = null;
+    pendingJoinTable.current = null;
+    pendingFind.current = null;
     roomId.current = null;
     tableId.current = null;
-    activeRoom.set(null);
+    if (!keepActiveRoom) activeRoom.set(null);
     pendingAction.current = null;
     setState((s) => ({
       ...s,
@@ -186,7 +197,8 @@ export function useDuel(active: boolean) {
       // A new invite replaces whatever room this player was in.
       if (roomId.current) send({ type: 'leave_room', room_id: roomId.current });
       reset();
-      send({ type: 'create_room', request_id: randomId() });
+      pendingCreate.current = { type: 'create_room', request_id: randomId() };
+      conn.current?.send(pendingCreate.current);
     },
     /** A friend's room by its six-digit code: answers with a preview, like `peek`. */
     findByCode: (code: string) => {
@@ -220,7 +232,7 @@ export function useDuel(active: boolean) {
     ready: (ready: boolean) => roomId.current && send({ type: 'set_ready', room_id: roomId.current, ready }),
     act: (action: PlayerAction) => {
       const game = state.room?.game;
-      if (!roomId.current || !game || state.pending) return;
+      if (!roomId.current || !game || state.pending || pendingAction.current) return;
       const actionId = randomId();
       pendingAction.current = actionId;
       setState((s) => ({ ...s, pending: true }));
@@ -232,7 +244,7 @@ export function useDuel(active: boolean) {
         expected_state_version: game.state_version,
         action,
       });
-      if (!ok) setState((s) => ({ ...s, pending: false }));
+      if (!ok) { pendingAction.current = null; setState((s) => ({ ...s, pending: false })); }
     },
     surrender: () => roomId.current && send({ type: 'surrender', room_id: roomId.current }),
     requestRematch: () => {
@@ -247,7 +259,8 @@ export function useDuel(active: boolean) {
     createTable: (seats: number) => {
       if (tableId.current) send({ type: 'leave_table', table_id: tableId.current });
       reset();
-      send({ type: 'create_table', request_id: randomId(), seats });
+      pendingCreate.current = { type: 'create_table', request_id: randomId(), seats };
+      conn.current?.send(pendingCreate.current);
     },
     joinTable: (id: string) => {
       tableId.current = id;
@@ -267,7 +280,7 @@ export function useDuel(active: boolean) {
     tableAgain: () => tableSend((table_id) => ({ type: 'table_again', table_id })),
     tableAct: (action: PlayerAction) => {
       const game = state.table?.game;
-      if (!tableId.current || !game || state.pending) return;
+      if (!tableId.current || !game || state.pending || pendingAction.current) return;
       const actionId = randomId();
       pendingAction.current = actionId;
       setState((s) => ({ ...s, pending: true }));
@@ -279,7 +292,7 @@ export function useDuel(active: boolean) {
         expected_state_version: game.state_version,
         action,
       });
-      if (!ok) setState((s) => ({ ...s, pending: false }));
+      if (!ok) { pendingAction.current = null; setState((s) => ({ ...s, pending: false })); }
     },
     clearError: () => setState((s) => ({ ...s, error: null })),
     reset,

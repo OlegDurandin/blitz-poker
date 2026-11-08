@@ -1,3 +1,4 @@
+import { FeedbackSettings } from '../components/FeedbackSettings';
 import { useEffect, useRef, useState } from 'react';
 import { ConfirmDialog } from '../components/Dialog';
 import { ChipIcon, HandshakeIcon, Trophy, CardsIcon } from '../components/icons';
@@ -184,7 +185,10 @@ export function Duel({ duel, inviteRoomId, onOpenInvite, enterCode = false, onEx
 
   if (state.conn === 'failed') {
     return (
-      <Center title="Не удалось войти" text={state.connError ?? (platform.label ? `Попробуйте открыть игру заново из ${platform.label}.` : 'Попробуйте открыть игру заново.')}>
+      <Center title="Не удалось подключиться" text={state.connError ?? (platform.label ? `Попробуйте открыть игру заново из ${platform.label}.` : 'Попробуйте открыть игру заново.')}>
+        <button className="btn btn--primary btn--block" onClick={duel.reconnect}>
+          Повторить подключение
+        </button>
         <button className="btn btn--secondary btn--block" onClick={onExit}>
           На главную
         </button>
@@ -362,12 +366,13 @@ export function Duel({ duel, inviteRoomId, onOpenInvite, enterCode = false, onEx
             clock: clock ? { mine: clock.my_turn, leftMs: clock.deadline_ms - now } : null,
             nextHandInMs: g.next_hand_at_ms ? g.next_hand_at_ms - now : null,
             pending: state.pending || offline,
+            offline,
           }}
         />
         {menu && (
           <div className="overlay" onClick={() => setMenu(false)}>
             <div className="surface surface--sheet" role="dialog" aria-modal="true" aria-label="Меню" onClick={(e) => e.stopPropagation()}>
-              <h2 className="surface__title">Дуэль</h2>
+              <h2 className="surface__title">Дуэль</h2><FeedbackSettings />
               <div className="menu">
                 <button className="btn btn--primary btn--block" onClick={() => setMenu(false)}>
                   Вернуться к игре

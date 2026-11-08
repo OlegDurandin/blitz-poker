@@ -1,0 +1,11 @@
+.git
+**/node_modules
+**/dist
+**/target
+**/.env
+**/.env.*
+**/*.db
+**/*.db-*
+web/src/engine/generated
+web/build.zip
+web/tsconfig.tsbuildinfo

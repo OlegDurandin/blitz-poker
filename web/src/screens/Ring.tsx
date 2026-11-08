@@ -2,17 +2,17 @@
 // along the top in turn order. Solo against bots, or online with friends
 // (`online`: names, turn clock, the server deals the next hand by itself).
 
-import { useEffect, useState } from 'react';
-import { BotAvatar } from '../components/icons';
+import { HandHistory } from '../components/HandHistory';
+import { showdownReason } from '../game/showdown';
+import { SeatView, TableArena, relativeSeats } from '../components/SeatView';
+import { LegalActions } from '../components/LegalActions';
+import { actionFeedback } from '../game/feedback';
 import { PlayingCard } from '../components/PlayingCard';
-import { RaiseSheet } from '../components/RaiseSheet';
-import { ActionTag, BetChip, DealerButton, Stack } from '../components/TableParts';
+import { BetChip } from '../components/TableParts';
 import type { ActionRecord, Card, PlayerAction, TableAction, TableOutcome, TableView } from '../engine/types';
-import { STREET_NAME, describeHand } from '../game/format';
+import { STREET_NAME, describeHand, actionLabel } from '../game/format';
 import { opponentInfo } from '../game/opponents';
 import { streetFor, useRunoutReveal } from '../game/runout';
-import { platform } from '../platform';
-import { formatClock } from './Table';
 
 /** A person at an online table, as the server shows them. */
 export interface Person {
@@ -30,6 +30,7 @@ export interface OnlineTable {
   nextHandInMs: number | null;
   /** An action is on its way to the server. */
   pending: boolean;
+  offline?: boolean;
 }
 
 interface Props {
@@ -57,12 +58,6 @@ function seatColor(view: TableView, seat: number): string {
   return s.type === 'bot' ? opponentInfo(s.opponent).color : '#8fb0ff';
 }
 
-/** Everyone but me, clockwise from my left: the order they act after me. */
-function othersInOrder(view: TableView): number[] {
-  const n = view.seats.length;
-  return Array.from({ length: n - 1 }, (_, i) => (view.me + 1 + i) % n);
-}
-
 /** ActionTag renders duel records; the seat field is not shown. */
 function asRecord(a: TableAction): ActionRecord {
   return { ...a, seat: 'bot' };
@@ -79,17 +74,9 @@ function lastAction(view: TableView, seat: number): ActionRecord | null {
   return null;
 }
 
-/**
- * Cyan marks on my best five, amber on the best five of whoever took the
- * main pot (if not me).
- */
-function marks(outcome: TableOutcome | null, me: number) {
-  const shown = outcome?.showdown;
-  if (!shown) return () => ({});
-  const mine = shown[me]?.best ?? [];
-  const other = outcome.pots[0]?.winners.find((w) => w !== me);
-  const theirs = other !== undefined ? (shown[other]?.best ?? []) : [];
-  return (c: Card) => ({ bestMine: mine.includes(c), bestTheirs: theirs.includes(c) });
+const HAND_COLORS = ['#38BDF8', '#F59E0B', '#C4B5FD', '#86EFAC'];
+export function tableMarks(outcome: TableOutcome | null, me: number, names: string[]) {
+  return (card: Card) => ({ marks: (outcome?.showdown ?? []).flatMap((hand, seat) => hand?.best.includes(card) ? [{ label: String(seat + 1), name: names[seat], color: HAND_COLORS[(seat - me + names.length) % names.length] }] : []) });
 }
 
 export function Ring(props: Props) {
@@ -97,33 +84,52 @@ export function Ring(props: Props) {
   const people = online?.people;
   const pending = online?.pending ?? false;
   const me = view.me;
-  const reveal = useRunoutReveal(`${view.table_id}:${view.hand_number}`, view.outcome?.runout_from ?? null, view.board.length);
-  const [raiseOpen, setRaiseOpen] = useState(false);
+  const reveal = useRunoutReveal(`${view.table_id}:${view.hand_number}`, online ? null : view.outcome?.runout_from ?? null, view.board.length);
+
 
   const handOver = view.phase === 'hand_over';
   const settled = handOver && !reveal.revealing;
   const outcome = view.outcome;
-  const cardProps = marks(settled ? outcome : null, me);
+  const cardProps = tableMarks(settled ? outcome : null, me, view.seats.map((_, i) => seatName(view, i, people)));
   const stacks = view.stacks.map((s, i) => (reveal.revealing && outcome ? s - outcome.awarded[i] : s));
   const myTurn = view.phase === 'in_hand' && view.to_act === me && view.legal !== null;
   const busted = view.stacks[me] === 0 && settled;
 
-  useEffect(() => {
-    if (!myTurn) setRaiseOpen(false);
-  }, [myTurn]);
 
   const act = (action: PlayerAction) => {
-    platform.haptic();
-    setRaiseOpen(false);
+    if (pending || paused) return;
+    actionFeedback();
     props.onAct(action);
   };
 
-  const opponents = othersInOrder(view);
+  const opponents = relativeSeats(view.seats.length, view.me);
   const potShown = reveal.revealing && outcome ? outcome.pot : view.pot;
   const board = view.board.slice(0, reveal.visible);
 
+  const renderSeat = (seat: number) => {
+    const mine = seat === me;
+    const person = people?.[seat];
+    const folded = view.folded[seat];
+    const active = view.phase === 'in_hand' && view.to_act === seat;
+    const cards = mine ? view.hole : view.shown[seat];
+    const record = lastAction(view, seat);
+    const badges = [view.button === seat && 'D', view.sb_seat === seat && 'SB', view.bb_seat === seat && 'BB'].filter(Boolean) as string[];
+    return <SeatView key={seat} name={seatName(view, seat, people)} mine={mine}
+      photo={person?.photo} botColor={view.seats[seat].type === 'bot' ? seatColor(view, seat) : undefined}
+      stack={stacks[seat]} gain={settled && outcome ? outcome.net[seat] : 0}
+      active={active} folded={folded} eliminated={!view.dealt[seat]} gone={person?.gone || view.left[seat]}
+      disconnected={online?.offline || (person != null && !person.connected)}
+      allIn={view.phase === 'in_hand' && view.dealt[seat] && !folded && stacks[seat] === 0}
+      winner={settled && (outcome?.awarded[seat] ?? 0) > 0} badges={badges}
+      leftMs={active && online?.clock?.seat === seat ? online.clock.leftMs : null}
+      action={record && !['small_blind', 'big_blind'].includes(record.kind) ? actionLabel(record) : null}
+      cards={cards ? cards.map(c => <PlayingCard key={c} card={c} size={mine ? 'lg' : 'sm'} {...cardProps(c)} />) : !mine && view.dealt[seat] && !folded ? <><PlayingCard faceDown size="sm" /><PlayingCard faceDown size="sm" /></> : null}>
+      {view.bets[seat] > 0 && <BetChip amount={view.bets[seat]} who={seatName(view, seat, people)} />}
+    </SeatView>;
+  };
+
   return (
-    <div className="table-screen">
+    <div className={`table-screen${settled ? ' table-screen--result' : ''}`}>
       <header className="hud">
         <span className="hud__hand">
           Раздача {view.hand_number}/{view.hands_total}
@@ -146,62 +152,19 @@ export function Ring(props: Props) {
         </div>
       )}
 
-      <section className={`ring-row ring-row--${opponents.length}`} aria-label="Соперники">
-        {opponents.map((seat) => (
-          <OpponentSeat
-            key={seat}
-            view={view}
-            seat={seat}
-            stack={stacks[seat]}
-            gain={settled && outcome ? outcome.net[seat] : 0}
-            cardProps={cardProps}
-            thinking={view.phase === 'in_hand' && view.to_act === seat}
-            people={people}
-            leftMs={online?.clock?.seat === seat ? online.clock.leftMs : null}
-          />
-        ))}
-      </section>
-
-      <section className={`felt${settled && outcome ? ' felt--result' : ''}`} aria-label="Стол">
-        <div className={`pot${potShown > 0 ? '' : ' is-empty'}`} aria-live="polite">
-          Банк {potShown}
-        </div>
+      <div className="table-scroll" role="region" aria-label="Стол и результат раздачи" tabIndex={0}>
+      <TableArena opponents={opponents.map(seat => renderSeat(seat))} hero={renderSeat(me)}>
+        <div className="pot" aria-live="polite">Банк {potShown}</div>
         <div className="board" aria-label="Общие карты">
-          {Array.from({ length: 5 }, (_, i) =>
-            board[i] ? (
-              <PlayingCard key={board[i]} card={board[i]} size="md" {...cardProps(board[i])} />
-            ) : (
-              <PlayingCard key={`slot-${i}`} size="md" />
-            ),
-          )}
+          {Array.from({ length: 5 }, (_, i) => <PlayingCard key={board[i] ?? `slot-${i}`} card={board[i]} size="md" {...(board[i] ? cardProps(board[i]) : {})} />)}
         </div>
-        {settled && outcome ? (
-          <RingBanner view={view} outcome={outcome} people={people} />
-        ) : (
-          <div className="felt__street">{STREET_NAME[reveal.revealing ? streetFor(reveal.visible) : view.street]}</div>
-        )}
-        <BetChip amount={view.bets[me]} who="Вы" />
-      </section>
+        <div className="felt__street">{settled ? (outcome?.by_fold ? 'Раздача завершена' : 'Вскрытие') : STREET_NAME[reveal.revealing ? streetFor(reveal.visible) : view.street]}</div>
+      </TableArena>
+      {settled && outcome && <><RingBanner view={view} outcome={outcome} people={people} />
+        <HandHistory actions={view.actions.map(a => ({ ...a, name: seatName(view, a.seat, people) }))} />
+      </>}
 
-      <section className={`seat seat--human${view.folded[me] ? ' is-folded' : ''}`} aria-label="Вы">
-        <div className="seat__cards seat__cards--hero">
-          {view.hole ? (
-            view.hole.map((c) => <PlayingCard key={c} card={c} size="lg" {...cardProps(c)} />)
-          ) : (
-            <span className="ring-out">Фишки закончились</span>
-          )}
-        </div>
-        <div className="seat__plate">
-          <div>
-            <div className="seat__name">
-              Вы
-              {view.button === me && <DealerButton />}
-            </div>
-            <Stack amount={stacks[me]} gain={settled && outcome ? outcome.net[me] : 0} />
-          </div>
-        </div>
-        <ActionTag action={lastAction(view, me)} />
-      </section>
+      </div>
 
       <div className="dock">
         <div className="dock__context" aria-live="polite">
@@ -209,39 +172,7 @@ export function Ring(props: Props) {
         </div>
         <div className="dock__body">
           {myTurn && view.legal ? (
-            <div className="actions">
-              {view.legal.fold && (
-                <button className="btn btn--secondary btn--action" disabled={pending} onClick={() => act({ type: 'fold' })} aria-label="Сбросить карты">
-                  Сбросить
-                </button>
-              )}
-              {view.legal.check && (
-                <button className="btn btn--secondary btn--action" disabled={pending} onClick={() => act({ type: 'check' })} aria-label="Чек: пропустить ход без ставки">
-                  Чек
-                </button>
-              )}
-              {view.legal.call !== null && (
-                <button
-                  className="btn btn--secondary btn--action"
-                  disabled={pending}
-                  onClick={() => act({ type: 'call' })}
-                  aria-label={view.legal.call_is_all_in ? `Уравнять олл-ин ${view.legal.call}` : `Уравнять ${view.legal.call}`}
-                >
-                  {view.legal.call_is_all_in ? `Олл-ин ${view.legal.call}` : `Колл ${view.legal.call}`}
-                </button>
-              )}
-              {view.legal.raise && (
-                <button
-                  className="btn btn--primary btn--action"
-                  disabled={pending}
-                  onClick={() => setRaiseOpen(true)}
-                  aria-label={view.legal.raise.kind === 'bet' ? 'Сделать ставку' : 'Повысить ставку'}
-                  aria-haspopup="dialog"
-                >
-                  {view.legal.raise.kind === 'bet' ? 'Ставка' : 'Рейз'}
-                </button>
-              )}
-            </div>
+            <LegalActions legal={view.legal} disabled={pending || paused} turnKey={`${view.hand_number}:${view.actions.length}:${view.to_act}`} onAct={act} />
           ) : reveal.revealing ? (
             <button className="btn btn--secondary btn--block" onClick={reveal.skip}>
               Пропустить анимацию
@@ -271,131 +202,32 @@ export function Ring(props: Props) {
         </div>
       </div>
 
-      {raiseOpen && myTurn && view.legal?.raise && (
-        <RaiseSheet
-          option={view.legal.raise}
-          onCancel={() => setRaiseOpen(false)}
-          onConfirm={(amount) => act({ type: 'raise_to', amount })}
-        />
-      )}
     </div>
   );
 }
 
-function OpponentSeat({
-  view,
-  seat,
-  stack,
-  gain,
-  cardProps,
-  thinking,
-  people,
-  leftMs,
-}: {
-  view: TableView;
-  seat: number;
-  stack: number;
-  gain: number;
-  cardProps: (c: Card) => { bestMine?: boolean; bestTheirs?: boolean };
-  thinking: boolean;
-  people?: (Person | null)[];
-  leftMs: number | null;
-}) {
-  const person = people?.[seat] ?? null;
-  const name = seatName(view, seat, people);
-  const away = person !== null && (!person.connected || person.gone);
-  const shown = view.shown[seat];
-  const inHand = view.dealt[seat] && !view.folded[seat];
-  const out = !view.dealt[seat];
-  return (
-    <div
-      className={`ring-seat${thinking ? ' is-turn' : ''}${view.folded[seat] ? ' is-folded' : ''}${out ? ' is-out' : ''}${away ? ' is-away' : ''}`}
-      aria-label={`${name}, стек ${stack}`}
-    >
-      <div className="ring-seat__cards">
-        {shown ? (
-          shown.map((c) => <PlayingCard key={c} card={c} size="sm" {...cardProps(c)} />)
-        ) : inHand ? (
-          <>
-            <PlayingCard faceDown size="sm" />
-            <PlayingCard faceDown size="sm" />
-          </>
-        ) : (
-          <span className="ring-seat__status">{person?.gone ? 'Ушёл' : out ? 'Выбыл' : 'Сбросил'}</span>
-        )}
-      </div>
-      <div className="ring-seat__plate">
-        {person?.photo ? (
-          <img className="bot-avatar avatar-photo" src={person.photo} alt="" />
-        ) : person ? (
-          <span className="bot-avatar ring-seat__initial" aria-hidden="true">
-            {person.name.slice(0, 1).toUpperCase()}
-          </span>
-        ) : (
-          <BotAvatar color={seatColor(view, seat)} />
-        )}
-        <div className="ring-seat__info">
-          <div className="seat__name">
-            <span className="seat__name-text">{name.replace(/^Бот /, '')}</span>
-            {view.button === seat && <DealerButton />}
-          </div>
-          <Stack amount={stack} gain={gain} />
-        </div>
-      </div>
-      <BetChip amount={view.bets[seat]} who={name} />
-      {thinking && person ? (
-        <div className={`tag tag--clock${leftMs !== null && leftMs <= 5000 ? ' is-low' : ''}`}>
-          ⏱ {leftMs !== null ? formatClock(leftMs) : '…'}
-        </div>
-      ) : (
-        <ActionTag action={lastAction(view, seat)} thinking={thinking} />
-      )}
-    </div>
-  );
-}
-
-function RingBanner({ view, outcome, people }: { view: TableView; outcome: TableOutcome; people?: (Person | null)[] }) {
+export function RingBanner({ view, outcome, people }: { view: TableView; outcome: TableOutcome; people?: (Person | null)[] }) {
   const me = view.me;
   const name = (seat: number) => seatName(view, seat, people);
-  const names = (seats: number[]) => seats.map(name).join(', ');
   const main = outcome.pots[0];
-  const won = outcome.awarded[me];
+  if (!main) return null;
   const tone = outcome.net[me] > 0 ? 'win' : outcome.net[me] < 0 ? 'loss' : 'draw';
-  const icon = tone === 'win' ? '▲' : tone === 'loss' ? '▼' : '=';
-  let headline: string;
-  if (main.winners.length > 1) headline = `Банк ${main.amount} разделён: ${names(main.winners)}`;
-  else if (main.winners[0] === me) headline = `Вы выиграли банк ${won}`;
-  else headline = `${name(main.winners[0])} выигрывает банк ${main.amount}`;
-
   const shown = outcome.showdown;
-  return (
-    <div className={`banner banner--${tone}`} role="status">
-      <div className="banner__headline">
-        <span aria-hidden="true">{icon}</span> {headline}
-      </div>
-      <div className="banner__detail">
-        {outcome.pots.slice(1).map((p, i) => (
-          <span key={i} className="banner__kicker">
-            Побочный банк {p.amount}: {names(p.winners)}
-          </span>
-        ))}
-        {shown ? (
-          shown.map((h, seat) =>
-            h ? (
-              <span key={seat} className="ring-banner__hand">
-                {seat === me && <i className="legend legend--mine" aria-hidden="true" />}
-                {seat !== me && main.winners.includes(seat) && <i className="legend legend--theirs" aria-hidden="true" />}
-                {name(seat)} — {describeHand(h)}
-              </span>
-            ) : null,
-          )
-        ) : (
-          <span>{main.winners[0] === me ? 'Соперники сбросили карты' : 'Остальные сбросили карты'}</span>
-        )}
-        {won > 0 && main.winners[0] !== me && <span className="banner__kicker">Вам досталось {won}</span>}
-      </div>
+  const headline = main.winners.length > 1 ? 'Банк разделён' : `${name(main.winners[0])} ${main.winners[0] === me ? 'выиграли' : 'выиграл'} ${main.amount}`;
+  const shownSeats = shown?.flatMap((h, i) => h ? [i] : []) ?? [];
+  const comparison = shown && shownSeats.length === 2 ? showdownReason([shown[shownSeats[0]]!, shown[shownSeats[1]]!], main.winners.length > 1 ? null : main.winners[0] === shownSeats[0] ? 'human' : 'bot') : null;
+  return <section className={`banner banner--${tone}`} aria-label="Результат раздачи" role="status">
+    <div className="banner__headline">{headline}</div>
+    <div className="banner__detail">
+      {shown?.map((hand, seat) => hand && <span key={seat} className="ring-banner__hand"><i className="hand-number" style={{ background: HAND_COLORS[(seat - me + view.seats.length) % view.seats.length] }}>{seat + 1}</i>{name(seat)} — {describeHand(hand)}</span>)}
+      {comparison && <span className="banner__reason">{comparison}</span>}
+      {!shown && <span>Остальные игроки сбросили карты</span>}
+      {outcome.pots.length > 1 && <details className="pot-details"><summary>Основной {main.amount} · Побочные: {outcome.pots.length - 1}</summary>
+        {outcome.pots.map((pot, i) => <div key={i}><strong>{i === 0 ? 'Основной банк' : `Побочный банк ${i}`} · {pot.amount}</strong><span>Победители: {pot.winners.map(name).join(', ')}</span><small>Претенденты: {pot.eligible.map(name).join(', ')}</small></div>)}
+      </details>}
+      <div className="awards" aria-label="Фактические выплаты">{outcome.awarded.map((amount, seat) => amount > 0 && <span key={seat}>{name(seat)} <strong>+{amount}</strong></span>)}</div>
     </div>
-  );
+  </section>;
 }
 
 function dockContext(
@@ -405,6 +237,7 @@ function dockContext(
   busted: boolean,
   online?: OnlineTable,
 ): string {
+  if (online?.offline) return 'Восстанавливаем соединение…';
   if (revealing) return 'Олл-ин: открываем карты';
   if (view.phase === 'hand_over') {
     if (view.is_final_hand) return 'Стол завершён';
@@ -417,8 +250,7 @@ function dockContext(
   }
   if (view.to_act === view.me) {
     if (online?.pending) return 'Отправляем ход…';
-    const clock = online?.clock?.leftMs != null ? ` · ${formatClock(online.clock.leftMs)}` : '';
-    return (view.to_call > 0 ? `Ваш ход · к ответу: ${Math.min(view.to_call, view.stacks[view.me])}` : 'Ваш ход') + clock;
+    return view.to_call > 0 ? `К ответу: ${Math.min(view.to_call, view.stacks[view.me])}` : 'Можно сделать чек';
   }
   if (view.to_act !== null) {
     const who = seatName(view, view.to_act, online?.people);

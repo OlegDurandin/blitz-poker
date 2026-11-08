@@ -2,7 +2,11 @@
 // invite links) live in ../platform.
 
 /** Base URL of the PvP server, e.g. https://pvp.example.ru. Unset: duels are hidden. */
-export const PVP_URL: string | undefined = import.meta.env.VITE_PVP_URL || undefined;
+const proxyOrigin = import.meta.env.VITE_PVP_PROXY_ORIGIN;
+export const PVP_URL: string | undefined =
+  proxyOrigin && typeof window !== 'undefined' && window.location.origin === proxyOrigin
+    ? proxyOrigin
+    : import.meta.env.VITE_PVP_URL || undefined;
 
 /** Commit of this build. */
 export const BUILD: string = typeof __BUILD__ === 'string' ? __BUILD__ : 'dev';
