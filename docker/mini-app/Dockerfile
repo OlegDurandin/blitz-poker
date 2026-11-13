@@ -13,7 +13,7 @@ COPY web/ ./
 COPY --from=wasm /src/target/wasm32-unknown-unknown/release/poker_wasm.wasm ./src/engine/generated/poker.wasm
 ARG VITE_BUILD=dev
 ARG VITE_PVP_URL=https://pvp.62-109-4-100.sslip.io
-ARG VITE_PVP_PROXY_ORIGIN=https://blitz.85-137-95-37.sslip.io
+ARG VITE_PVP_PROXY_ORIGIN=
 ARG VITE_TG_BOT=blitzpokerbot
 RUN npm run typecheck && npx vitest run && npx vite build
 
