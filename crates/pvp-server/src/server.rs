@@ -11,7 +11,7 @@ use crate::player::PlayerId;
 use crate::room::Profile;
 use crate::{telegram, vk};
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Query, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -46,6 +46,13 @@ pub fn router(hub: Arc<Hub>) -> Router {
         .route("/api/ticket", post(ticket))
         .route("/ws", get(ws))
         .route("/health", get(health))
+        .route("/api/me/profile", get(personal_profile))
+        .route("/api/me/matches", get(personal_matches))
+        .route("/api/me/matches/{event}", get(personal_detail))
+        .route(
+            "/api/me/local-results",
+            post(local_result).layer(DefaultBodyLimit::max(4096)),
+        )
         .layer(cors)
         .with_state(hub)
 }
@@ -285,6 +292,7 @@ async fn auth(
         "ticket": ticket,
         "protocol": crate::protocol::PROTOCOL_VERSION,
         "user": { "name": profile.name, "photo": profile.photo },
+        "account_key": who.id.to_string(),
     }))
     .into_response()
 }
@@ -394,6 +402,70 @@ fn user_tag(id: PlayerId) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(format!("blitz-log:{}", id.raw()));
     digest[..3].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn personal_response(
+    hub: &Hub,
+    headers: &HeaderMap,
+    query: crate::progress::HistoryQuery,
+    event: Option<&str>,
+    report: Option<&crate::progress::LocalReport>,
+    profile: bool,
+) -> Response {
+    let token = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or("");
+    match hub.personal(token, query, event, report, profile) {
+        Ok(value) => Json(value).into_response(),
+        Err(code) => reject(
+            StatusCode::from_u16(code).unwrap(),
+            "profile_error",
+            match code {
+                401 => "Откройте профиль через VK или Telegram",
+                400 => "Некорректные данные",
+                404 => "Матч не найден",
+                429 => "Повторите через минуту",
+                _ => "Не удалось сохранить или загрузить профиль. Повторите",
+            },
+        ),
+    }
+}
+async fn personal_profile(
+    State(hub): State<Arc<Hub>>,
+    headers: HeaderMap,
+    Query(q): Query<crate::progress::HistoryQuery>,
+) -> Response {
+    personal_response(&hub, &headers, q, None, None, true)
+}
+async fn personal_matches(
+    State(hub): State<Arc<Hub>>,
+    headers: HeaderMap,
+    Query(q): Query<crate::progress::HistoryQuery>,
+) -> Response {
+    personal_response(&hub, &headers, q, None, None, false)
+}
+async fn personal_detail(
+    State(hub): State<Arc<Hub>>,
+    headers: HeaderMap,
+    Path(event): Path<String>,
+) -> Response {
+    personal_response(
+        &hub,
+        &headers,
+        Default::default(),
+        Some(&event),
+        None,
+        false,
+    )
+}
+async fn local_result(
+    State(hub): State<Arc<Hub>>,
+    headers: HeaderMap,
+    Json(r): Json<crate::progress::LocalReport>,
+) -> Response {
+    personal_response(&hub, &headers, Default::default(), None, Some(&r), false)
 }
 
 #[cfg(test)]

@@ -49,10 +49,16 @@ async fn main() {
             config.bind
         );
     }
-    let store = Store::open(&config.db_path).unwrap_or_else(|e| {
+    let mut store = Store::open(&config.db_path).unwrap_or_else(|e| {
         eprintln!("cannot open database {}: {e}", config.db_path);
         std::process::exit(2);
     });
+    store.set_rewards(
+        pvp_server::progress::Rewards::from_env().unwrap_or_else(|e| {
+            eprintln!("configuration error: {e}");
+            std::process::exit(2);
+        }),
+    );
     let bind = config.bind;
     let hub = Arc::new(Hub::new(config, store));
 

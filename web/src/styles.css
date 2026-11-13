@@ -2957,3 +2957,41 @@ button, input { touch-action: manipulation; }
   .home-table-art__cards { top: 33px; }
   .home-table-art__cards span { width: 32px; height: 42px; font-size: 17px; line-height: 42px; }
 }
+
+/* Personal progress uses the same mobile surfaces and safe areas as the game. */
+.player-profile { min-width: 0; color: #fff; }
+.player-profile h1 { font-size: 1.4rem; margin: 0; }
+.player-profile h2 { font-size: 1.1rem; margin: 22px 0 12px; }
+.profile-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.profile-identity { display: flex; align-items: center; gap: 12px; margin: 16px 0; overflow-wrap: anywhere; }
+.profile-identity img { width: 56px; height: 56px; border-radius: 50%; object-fit: cover; }
+.profile-identity div { display: grid; gap: 4px; min-width: 0; }
+.profile-identity span, .profile-note, .profile-xp small { color: #ccdaeb; }
+.profile-xp { display: grid; gap: 6px; width: 100%; margin: 12px 0; }
+.profile-xp progress { width: 100%; height: 10px; accent-color: #3268db; }
+.profile-source { display: grid; gap: 8px; margin-top: 20px; }
+.profile-source select { min-height: 44px; padding: 8px; color: #fff; background: #1a2b40; border: 1px solid #68809c; border-radius: 10px; font: inherit; width: 100%; }
+.profile-note { font-size: .85rem; line-height: 1.5; }
+.profile-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin: 16px 0; }
+.profile-tabs button { flex: 1 1 55px; min-height: 44px; padding: 8px; border: 1px solid #68809c; border-radius: 10px; color: #fff; background: #1a2b40; font: inherit; }
+.profile-tabs button[aria-pressed=true] { background: #3268db; }
+.profile-metrics { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 8px; }
+.profile-metrics div { display: grid; align-content: start; gap: 8px; padding: 12px 6px; text-align: center; border-radius: 12px; background: #1a2b40; overflow-wrap: anywhere; }
+.profile-metrics strong { font-size: 1.4rem; }
+.profile-metrics span { font-size: .8rem; }
+.profile-match { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 60px; padding: 12px 0; color: #fff; background: transparent; border: 0; border-bottom: 1px solid #3c5069; font: inherit; text-align: left; overflow-wrap: anywhere; }
+.profile-match > span:first-child { display: grid; gap: 5px; min-width: 0; }
+.profile-match > span:last-child { flex-shrink: 0; font-size: .85rem; }
+.profile-match small { color: #ccdaeb; }
+.profile-achievements { list-style: none; padding: 0; display: grid; gap: 12px; }
+.profile-achievements li { padding: 12px; background: #1a2b40; border-radius: 10px; }
+.profile-achievements small { display: block; margin-top: 6px; color: #ccdaeb; }
+.profile-achievements .is-unlocked > span { color: #50d4b0; }
+.profile-detail, .result-progress { padding: 14px; border: 1px solid #3c5069; border-radius: 12px; margin-top: 16px; overflow-wrap: anywhere; }
+.result-progress { display: grid; gap: 6px; }
+button.home-profile { background: transparent; color: inherit; border: 0; font: inherit; min-height: 44px; cursor: pointer; }
+.profile-xp progress { appearance: none; border: 0; border-radius: 8px; overflow: hidden; background: #354b66; }
+.profile-xp progress::-webkit-progress-bar { background: #354b66; border-radius: 8px; }
+.profile-xp progress::-webkit-progress-value { background: #3268db; border-radius: 8px; }
+.profile-xp progress::-moz-progress-bar { background: #3268db; border-radius: 8px; }
+.column[hidden] { display: none; }

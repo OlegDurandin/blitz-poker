@@ -76,12 +76,24 @@ impl Server {
 
 /// Minimal HTTP/1.1 POST; returns (status, json body).
 async fn post(addr: SocketAddr, path: &str, body: &Value, bearer: Option<&str>) -> (u16, Value) {
+    request(addr, "POST", path, body, bearer).await
+}
+async fn get(addr: SocketAddr, path: &str, bearer: Option<&str>) -> (u16, Value) {
+    request(addr, "GET", path, &Value::Null, bearer).await
+}
+async fn request(
+    addr: SocketAddr,
+    method: &str,
+    path: &str,
+    body: &Value,
+    bearer: Option<&str>,
+) -> (u16, Value) {
     let body = body.to_string();
     let auth = bearer
         .map(|b| format!("Authorization: Bearer {b}\r\n"))
         .unwrap_or_default();
     let req = format!(
-        "POST {path} HTTP/1.1\r\nHost: test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n{auth}\r\n{body}",
+        "{method} {path} HTTP/1.1\r\nHost: test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n{auth}\r\n{body}",
         body.len()
     );
     let mut s = TcpStream::connect(addr).await.unwrap();
@@ -473,6 +485,16 @@ async fn full_duel_between_two_clients() {
         .await;
     let again = guest.snapshot(|r| r["status"] == "playing").await;
     assert_ne!(again["game"]["match_id"], h["game"]["match_id"]);
+    for c in [&host, &guest] {
+        let (status, p) = get(s.addr, "/api/me/profile?source=server", Some(&c.session)).await;
+        assert_eq!(status, 200);
+        assert_eq!(p["statistics"]["duel"]["matches_played"], 1);
+        assert_eq!(
+            p["recent_matches"]["items"][0]["match_id"],
+            h["game"]["match_id"]
+        );
+        assert!(p["recent_matches"]["items"][0].get("hands").is_none());
+    }
     s.stop();
 }
 
@@ -815,6 +837,18 @@ async fn telegram_player_joins_a_vk_room_by_code() {
         (status, body["error"]["code"].as_str()),
         (401, Some("bad_launch_params"))
     );
+    host.send(json!({"type":"surrender","room_id":room_id}))
+        .await;
+    tg.snapshot(|r| r["status"] == "finished").await;
+    let (_, vp) = get(s.addr, "/api/me/profile", Some(&host.session)).await;
+    let (_, tp) = get(s.addr, "/api/me/profile", Some(&tg.session)).await;
+    assert_ne!(vp["player_id"], tp["player_id"]);
+    assert_eq!(vp["platform_badge"], "VK");
+    assert_eq!(tp["platform_badge"], "TG");
+    assert_eq!(vp["statistics"]["duel"]["losses"], 1);
+    assert_eq!(tp["statistics"]["duel"]["wins"], 1);
+    assert_eq!(vp["progress"]["xp_total"], 20);
+    assert_eq!(tp["progress"]["xp_total"], 30);
     s.stop();
 }
 
@@ -924,6 +958,14 @@ async fn friends_and_a_bot_play_a_table() {
         .await;
     let again = table_snapshot(&mut host, |t| t["status"] == "playing").await;
     assert_ne!(again["game"]["match_id"], first_match);
+    for c in [&host, &friend] {
+        let (_, p) = get(s.addr, "/api/me/profile?source=server", Some(&c.session)).await;
+        assert_eq!(p["statistics"]["table"]["matches_played"], 1);
+        let m = &p["recent_matches"]["items"][0];
+        assert_eq!(m["match_id"], first_match);
+        assert_eq!(m["human_count"], 2);
+        assert_eq!(m["bot_count"], 1);
+    }
     s.stop();
 }
 
@@ -999,4 +1041,93 @@ async fn a_table_survives_a_server_restart() {
     assert_eq!(after["game"]["match_id"], before["game"]["match_id"]);
     s.stop();
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn personal_progress_is_private_idempotent_and_survives_restart() {
+    let db = std::env::temp_dir().join(format!(
+        "blitz-profile-{}.sqlite",
+        pvp_server::ids::room_id()
+    ));
+    let db = db.to_str().unwrap();
+    let s = start(db).await;
+    let (_, a) = post(
+        s.addr,
+        "/api/auth",
+        &json!({"launch_params":launch(42),"name":"А"}),
+        None,
+    )
+    .await;
+    let token = a["session"].as_str().unwrap();
+    assert_eq!(get(s.addr, "/api/me/profile", None).await.0, 401);
+    let (status, empty) = get(s.addr, "/api/me/profile", Some(token)).await;
+    assert_eq!(status, 200);
+    assert!(empty["statistics"]["all"]["win_rate"].is_null());
+    let report = json!({"match_id":"local-0001","mode":"solo","outcome":"win","final_stack":700,"hands_played":8,"hands_won":4,"opponents":["Бот Алекс"]});
+    let (status, first) = post(s.addr, "/api/me/local-results", &report, Some(token)).await;
+    assert_eq!(status, 200);
+    assert_eq!(first["xp"], 15);
+    assert_eq!(
+        post(s.addr, "/api/me/local-results", &report, Some(token))
+            .await
+            .1,
+        first
+    );
+    let event = first["event_id"].as_str().unwrap();
+    let (_, b) = post(
+        s.addr,
+        "/api/auth",
+        &json!({"launch_params":launch(43)}),
+        None,
+    )
+    .await;
+    assert_eq!(
+        get(
+            s.addr,
+            &format!("/api/me/matches/{event}"),
+            b["session"].as_str()
+        )
+        .await
+        .0,
+        404
+    );
+    assert_eq!(
+        get(s.addr, "/api/me/matches?limit=100000", Some(token))
+            .await
+            .0,
+        400
+    );
+    assert_eq!(
+        get(s.addr, "/api/me/matches?mode=unknown", Some(token))
+            .await
+            .0,
+        400
+    );
+    let mut invalid = report.clone();
+    invalid["player_id"] = json!("someone-else");
+    assert_eq!(
+        post(s.addr, "/api/me/local-results", &invalid, Some(token))
+            .await
+            .0,
+        422
+    );
+    let (_, p) = get(s.addr, "/api/me/profile", Some(token)).await;
+    assert_eq!(p["statistics"]["all"]["matches_played"], 1);
+    assert_eq!(p["progress"]["xp_total"], 15);
+    s.stop();
+    let s = start(db).await;
+    assert_eq!(get(s.addr, "/api/me/profile", Some(token)).await.0, 401);
+    let (_, a) = post(
+        s.addr,
+        "/api/auth",
+        &json!({"launch_params":launch(42),"name":"Новое имя"}),
+        None,
+    )
+    .await;
+    let (_, p2) = get(s.addr, "/api/me/profile", a["session"].as_str()).await;
+    assert_eq!(p2["player_id"], p["player_id"]);
+    assert_eq!(p2["display_name"], "Новое имя");
+    assert_eq!(p2["progress"]["xp_total"], 15);
+    s.stop();
+    std::fs::remove_file(db).unwrap();
 }

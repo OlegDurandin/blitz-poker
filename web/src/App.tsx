@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { ProfileScreen } from './profile/Profile';
+import { syncLocal } from './profile/api';
 import { ConfirmDialog } from './components/Dialog';
 import { OpponentPicker } from './components/OpponentPicker';
 import { TablePicker } from './components/TablePicker';
@@ -52,6 +54,7 @@ type HistorySource = 'result' | 'stats';
 
 export function App() {
   const [screen, setScreen] = useState<Screen>({ name: 'loading' });
+  const [profileOpen, setProfileOpen] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirm, setConfirm] = useState<Confirm>(null);
@@ -60,8 +63,8 @@ export function App() {
   const [opponent, setOpponent] = useState<Opponent>(() => storage.loadOpponent());
   const [pickerOpen, setPickerOpen] = useState(false);
   const [tablePickerOpen, setTablePickerOpen] = useState(false);
-  const game = useGame({ paused: menuOpen || rulesOpen || confirm !== null });
-  const ring = useTableGame({ paused: menuOpen || rulesOpen || confirm !== null });
+  const game = useGame({ paused: profileOpen || menuOpen || rulesOpen || confirm !== null });
+  const ring = useTableGame({ paused: profileOpen || menuOpen || rulesOpen || confirm !== null });
   const duel = useDuel(screen.name === 'duel' || screen.name === 'table_online');
 
   const boot = useCallback(() => {
@@ -95,6 +98,16 @@ export function App() {
   }, []);
 
   useEffect(boot, [boot]);
+  useEffect(() => {
+    const open = () => setProfileOpen(true);
+    const sync = () => { void syncLocal().catch(() => {}); };
+    window.addEventListener('blitz:profile', open);
+    window.addEventListener('online', sync);
+    window.addEventListener('focus', sync);
+    const timer = window.setInterval(sync, 30_000);
+    sync();
+    return () => { window.removeEventListener('blitz:profile', open); window.removeEventListener('online', sync); window.removeEventListener('focus', sync); window.clearInterval(timer); };
+  }, []);
 
   // Opens a friend's room: from an invite tapped while the app was already
   // open, or a link pasted on the duel screen. A room of one's own that nobody
@@ -149,7 +162,8 @@ export function App() {
 
   const onTable = () => {
     if (tableStorage.load().kind !== 'none') {
-      if (ring.resume()) return setScreen({ name: 'ring' });
+      const resumed = ring.resume();
+      if (resumed) return setScreen(resumed.view.phase === 'match_over' ? { name: 'ring_result' } : { name: 'ring' });
       // An unreadable table is dropped rather than blocking the mode.
       tableStorage.clear();
     }
@@ -187,13 +201,13 @@ export function App() {
 
   const onContinue = () => {
     const out = game.resumeMatch();
-    if (out.ok) setScreen({ name: 'table' });
+    if (out.ok) setScreen(out.session.view.phase === 'match_over' ? { name: 'result' } : { name: 'table' });
     else setScreen({ name: 'save_error', code: out.code });
   };
 
   const onContinueTutorial = () => {
     const out = game.resumeTutorial();
-    if (out.ok) setScreen({ name: 'table' });
+    if (out.ok) setScreen(out.session.view.phase === 'match_over' ? { name: 'result' } : { name: 'table' });
     else {
       storage.clearTutorial();
       toTable(game.startTutorial());
@@ -292,6 +306,7 @@ export function App() {
           onSkipTutorial={skipTutorial}
           onRules={() => setRulesOpen(true)}
           onStats={openStats}
+          onProfile={PVP_URL && (platform.canHost || devUserId() !== null) ? () => setProfileOpen(true) : undefined}
           onDuel={
             // Hosting needs a messenger sign-in; guests can only join by code.
             PVP_URL && (platform.canHost || devUserId() !== null)
@@ -375,6 +390,7 @@ export function App() {
       content = view?.result ? (
         <Result
           result={view.result}
+          matchId={view.match_id}
           opponent={view.opponent}
           onRematch={() => {
             track('rematch_clicked', { previous_result: view.result!.outcome, opponent: view.opponent });
@@ -483,7 +499,8 @@ export function App() {
 
   return (
     <div className="app">
-      <div className="column">{content}</div>
+      <div className="column" hidden={profileOpen} inert={profileOpen}>{content}</div>
+      {profileOpen && <ProfileScreen onClose={() => setProfileOpen(false)} onStart={() => { setProfileOpen(false); onStart(); }} />}
 
       {menuOpen && screen.name === 'ring' && ringView && (
         <PauseMenu

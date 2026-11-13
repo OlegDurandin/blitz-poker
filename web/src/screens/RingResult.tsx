@@ -1,3 +1,4 @@
+import { ResultProgress } from '../profile/ResultProgress';
 import { BotAvatar, CardsIcon, ChipIcon, Trophy } from '../components/icons';
 import { PlayingCard } from '../components/PlayingCard';
 import type { TableView } from '../engine/types';
@@ -110,6 +111,7 @@ export function RingResult({ view, stats, onAgain, onHome, online }: Props) {
             Сыграть ещё стол
           </button>
         )}
+        <ResultProgress matchId={view.table_id} local={!online} />
         <button className="btn btn--ghost btn--block" onClick={onHome}>
           {online ? 'Выйти из-за стола' : 'На главную'}
         </button>

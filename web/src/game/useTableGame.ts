@@ -5,6 +5,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { tableEngine } from '../engine/engine';
 import type { Opponent, PlayerAction, TableEngineResult, TableView } from '../engine/types';
+import { accountKey, queueLocal } from '../profile/api';
+import { botName } from './opponents';
 import { prefersReducedMotion } from './motion';
 import { recordTable, recordTableAbandon, tableStorage, type SavedTable, type TableStats } from './tableStorage';
 
@@ -18,7 +20,16 @@ const BOT_DELAY_MS = 750;
 const BOT_DELAY_REDUCED_MS = 300;
 
 function persist(s: TableSession): boolean {
-  if (s.view.phase === 'match_over') return tableStorage.clear();
+  if (s.view.phase === 'match_over' && s.view.result) {
+    const r = s.view.result;
+    const place = r.places[s.view.me];
+    const outcome = place === 1 ? (r.places.filter(p => p === 1).length > 1 ? 'draw' : 'win') : 'loss';
+    if (!queueLocal({ match_id: s.view.table_id, mode: 'table', outcome, final_stack: r.final_stacks[s.view.me], hands_played: r.hands_played, hands_won: r.hands_won[s.view.me], opponents: s.view.seats.flatMap(seat => seat.type === 'bot' ? [botName(seat.opponent)] : []) }, s.meta.profileOwner)) {
+      tableStorage.save({ state: s.state, meta: s.meta });
+      return false;
+    }
+    return tableStorage.clear();
+  }
   return tableStorage.save({ state: s.state, meta: s.meta });
 }
 
@@ -51,21 +62,22 @@ export function useTableGame({ paused }: { paused: boolean }) {
   const start = useCallback(
     (bots: Opponent[]) => {
       tableStorage.saveBots(bots);
-      return commit(tableEngine.start(bots), { startedAt: Date.now() });
+      return commit(tableEngine.start(bots), { startedAt: Date.now(), profileOwner: accountKey() });
     },
     [commit],
   );
 
   /** Loads the saved table; false when it is missing or unreadable. */
-  const resume = useCallback((): boolean => {
+  const resume = useCallback((): TableSession | null => {
     const loaded = tableStorage.load();
-    if (loaded.kind !== 'ok') return false;
+    if (loaded.kind !== 'ok') return null;
     const res = tableEngine.load(loaded.saved.state);
-    if (!res.ok) return false;
+    if (!res.ok) return null;
     const next: TableSession = { state: res.state, view: res.view, meta: loaded.saved.meta };
     ref.current = next;
     setSession(next);
-    return true;
+    persist(next);
+    return next;
   }, []);
 
   const act = useCallback(

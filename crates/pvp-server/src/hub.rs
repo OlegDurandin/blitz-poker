@@ -124,6 +124,9 @@ struct State {
     guest_auths: Windows,
     sessions: Sessions,
     store: Store,
+    local_reports: Windows,
+    pending_rooms: std::collections::HashSet<String>,
+    pending_tables: std::collections::HashSet<String>,
     next_conn: u64,
 }
 
@@ -185,6 +188,9 @@ impl Hub {
                 guest_auths: Windows::default(),
                 sessions: Sessions::default(),
                 store,
+                local_reports: Windows::default(),
+                pending_rooms: Default::default(),
+                pending_tables: Default::default(),
                 next_conn: 1,
             }),
             seq: AtomicU64::new(0),
@@ -236,6 +242,52 @@ impl Hub {
 
     pub fn redeem_ticket(&self, ticket: &str) -> Option<Profile> {
         self.lock().sessions.redeem(ticket, now_ms())
+    }
+
+    pub fn personal(
+        &self,
+        session: &str,
+        query: crate::progress::HistoryQuery,
+        detail: Option<&str>,
+        local: Option<&crate::progress::LocalReport>,
+        profile: bool,
+    ) -> Result<serde_json::Value, u16> {
+        let mut st = self.lock();
+        let who = st
+            .sessions
+            .profile(session, now_ms())
+            .filter(|p| !p.id.is_guest())
+            .ok_or(401u16)?;
+        if !query.valid() || local.is_some_and(|r| !r.valid()) {
+            return Err(400);
+        }
+        if local.is_some() && st.local_reports.add(&who.id.to_string(), now_ms(), 60_000) > 60 {
+            return Err(429);
+        }
+        let tx = st.store.conn.unchecked_transaction().map_err(|_| 503u16)?;
+        let id = crate::progress::identity(&tx, &who, now_ms())
+            .map_err(|_| 503u16)?
+            .ok_or(401u16)?;
+        let value = if let Some(report) = local {
+            crate::progress::local(&tx, &who, report, now_ms(), &st.store.rewards)
+        } else if let Some(event) = detail {
+            Ok(crate::progress::detail(&tx, &id, event)
+                .map_err(|_| 503u16)?
+                .ok_or(404u16)?)
+        } else if profile {
+            crate::progress::profile(
+                &tx,
+                &who,
+                query.source.as_deref().unwrap_or("all"),
+                now_ms(),
+            )
+        } else {
+            crate::progress::matches(&tx, &id, &query)
+        }
+        .map_err(|_| 503u16)?;
+        tx.commit().map_err(|_| 503u16)?;
+        crate::progress::publish_events(&st.store.conn);
+        Ok(value)
     }
 
     // ---------- connections ----------
@@ -399,6 +451,16 @@ impl Hub {
             return reply(
                 &st,
                 error(None, "bad_request", "Не удалось разобрать сообщение"),
+            );
+        }
+        if !self.flush_pending(&mut st, now) {
+            return reply(
+                &st,
+                error(
+                    None,
+                    "persistence_pending",
+                    "Сохраняем результат. Повторите действие",
+                ),
             );
         }
         let player = profile.id;
@@ -779,30 +841,22 @@ impl Hub {
         };
         let events = room.take_events();
         let room = st.rooms.get(room_id).expect("room");
+        st.pending_rooms.insert(room_id.to_string());
         if let Err(e) = st.store.save_room(room, now) {
             self.metrics
                 .persistence_errors
                 .fetch_add(1, Ordering::Relaxed);
             tracing::error!(room = %ids::log_tag(room_id), "save failed: {e}");
+        } else {
+            st.pending_rooms.remove(room_id);
         }
         for event in events {
-            let Event::MatchFinished {
-                host,
-                guest,
-                outcome_for_host,
-                forfeit,
-            } = event;
+            let Event::MatchFinished { forfeit, .. } = event;
             self.metrics
                 .matches_finished
                 .fetch_add(1, Ordering::Relaxed);
             if forfeit.is_some() {
                 self.metrics.forfeits.fetch_add(1, Ordering::Relaxed);
-            }
-            if let Err(e) = st.store.record_duel(host, guest, outcome_for_host) {
-                self.metrics
-                    .persistence_errors
-                    .fetch_add(1, Ordering::Relaxed);
-                tracing::error!("record duel failed: {e}");
             }
         }
         for m in room.members() {
@@ -1062,11 +1116,14 @@ impl Hub {
             tracing::info!(table = %ids::log_tag(id), people, bots, "table finished");
         }
         let t = st.tables.get(id).expect("table");
+        st.pending_tables.insert(id.to_string());
         if let Err(e) = st.store.save_table(t, now) {
             self.metrics
                 .persistence_errors
                 .fetch_add(1, Ordering::Relaxed);
             tracing::error!(table = %ids::log_tag(id), "save failed: {e}");
+        } else {
+            st.pending_tables.remove(id);
         }
         // Everyone seated, including who just left: they see the result.
         let players: Vec<PlayerId> = t
@@ -1118,10 +1175,28 @@ impl Hub {
         );
     }
 
+    fn flush_pending(&self, st: &mut State, now: u64) -> bool {
+        st.pending_rooms.retain(|id| {
+            st.rooms
+                .get(id)
+                .is_some_and(|r| st.store.save_room(r, now).is_err())
+        });
+        st.pending_tables.retain(|id| {
+            st.tables
+                .get(id)
+                .is_some_and(|t| st.store.save_table(t, now).is_err())
+        });
+        st.pending_rooms.is_empty() && st.pending_tables.is_empty()
+    }
+
     /// Timers for every room; called a few times per second.
     pub fn tick(&self) {
         let now = now_ms();
         let mut st = self.lock();
+        if !self.flush_pending(&mut st, now) {
+            return;
+        }
+        crate::progress::publish_events(&st.store.conn);
         let mut dealer = OsDealer;
         let ids: Vec<String> = st.rooms.keys().cloned().collect();
         for id in ids {
@@ -1145,6 +1220,7 @@ impl Hub {
         st.create_requests.retain(|_, id| live.contains(id));
         let live: std::collections::HashSet<String> = st.tables.keys().cloned().collect();
         st.table_requests.retain(|_, id| live.contains(id));
+        st.local_reports.prune(now, 60_000);
         st.code_misses.prune(now, CODE_MISSES_WINDOW_MS);
         st.guest_auths.prune(now, GUEST_AUTH_WINDOW_MS);
         st.sessions.prune(now);

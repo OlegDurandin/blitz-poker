@@ -1,3 +1,4 @@
+import { ResultProgress } from '../profile/ResultProgress';
 import { CardsIcon, ChipIcon, HandshakeIcon, Trophy } from '../components/icons';
 import { PlayingCard } from '../components/PlayingCard';
 import type { MatchResult, Opponent } from '../engine/types';
@@ -6,6 +7,7 @@ import { botName } from '../game/opponents';
 
 interface Props {
   result: MatchResult;
+  matchId?: string;
   opponent: Opponent;
   onRematch: () => void;
   onHistory: () => void;
@@ -18,7 +20,7 @@ const COPY = {
   draw: { title: 'Ничья!', subtitle: 'Стеки сравнялись после восьми раздач' },
 } as const;
 
-export function Result({ result, opponent, onRematch, onHistory, onHome }: Props) {
+export function Result({ result, matchId, opponent, onRematch, onHistory, onHome }: Props) {
   const copy = COPY[result.outcome];
   const n = result.hands_played;
   return (
@@ -71,6 +73,7 @@ export function Result({ result, opponent, onRematch, onHistory, onHome }: Props
         <button className="btn btn--secondary btn--block" onClick={onHistory}>
           История раздач
         </button>
+        {matchId && <ResultProgress matchId={matchId} local />}
         <button className="btn btn--ghost btn--block" onClick={onHome}>
           На главную
         </button>

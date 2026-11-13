@@ -25,6 +25,7 @@ const isOpponent = (x: unknown): x is Opponent => OPPONENT_IDS.includes(x as Opp
 export type TutorialStep = 'cards' | 'action' | 'result' | 'done';
 
 export interface SessionMeta {
+  profileOwner?: string | null;
   startedAt: number;
   handStartedAt: number;
   firstMatch: boolean;

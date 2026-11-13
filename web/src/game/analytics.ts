@@ -2,6 +2,8 @@
 // Events are buffered; plug a real transport into `setTransport` when ready.
 
 export type AnalyticsEvent =
+  | 'profile_opened'
+  | 'profile_mode_selected'
   | 'app_open'
   | 'start_click'
   | 'tutorial_started'

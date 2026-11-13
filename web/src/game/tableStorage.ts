@@ -18,7 +18,7 @@ export const MAX_BOTS = 3;
 
 export interface SavedTable {
   state: TableState;
-  meta: { startedAt: number };
+  meta: { startedAt: number; profileOwner?: string | null };
 }
 
 export interface TableStats {

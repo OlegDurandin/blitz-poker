@@ -9,6 +9,7 @@ pub mod config;
 pub mod hub;
 pub mod ids;
 pub mod player;
+pub mod progress;
 pub mod protocol;
 pub mod room;
 pub mod server;

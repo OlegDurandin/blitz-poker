@@ -21,6 +21,7 @@ interface Props {
   onSkipTutorial: () => void;
   onRules: () => void;
   onStats: () => void;
+  onProfile?: () => void;
   opponent: Opponent;
   onPickOpponent: () => void;
   /** "Играть с другом"; absent when no duel server is configured. */
@@ -45,7 +46,7 @@ export function Home(p: Props) {
       <header className="brand">
         <SpadeLogo />
         <span className="brand__name">BLITZ POKER</span>
-        {profile && <span className="home-profile">{profile.photo && <img src={profile.photo} alt="" />}<span>{profile.name}</span></span>}
+        {p.onProfile ? <button className="home-profile" onClick={p.onProfile} aria-label="Мой профиль">{profile?.photo && <img src={profile.photo} alt="" />}<span>Профиль</span></button> : profile && <span className="home-profile">{profile.photo && <img src={profile.photo} alt="" />}<span>{profile.name}</span></span>}
       </header>
 
       <div className="home__intro">

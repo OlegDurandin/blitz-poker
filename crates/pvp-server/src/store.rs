@@ -11,7 +11,8 @@ use poker_core::MatchOutcome;
 use rusqlite::{Connection, OptionalExtension, params};
 
 pub struct Store {
-    conn: Connection,
+    pub(crate) conn: Connection,
+    pub(crate) rewards: crate::progress::Rewards,
 }
 
 const SCHEMA: &str = "
@@ -37,7 +38,7 @@ CREATE TABLE IF NOT EXISTS tables (
     updated_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS tables_status ON tables (status);
-PRAGMA user_version = 2;
+
 ";
 
 fn status_name(s: Status) -> &'static str {
@@ -51,22 +52,45 @@ fn status_name(s: Status) -> &'static str {
 }
 
 impl Store {
+    pub fn set_rewards(&mut self, rewards: crate::progress::Rewards) {
+        self.rewards = rewards;
+    }
     /// `path` may be `:memory:` for tests.
     pub fn open(path: &str) -> rusqlite::Result<Store> {
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
-        conn.execute_batch(SCHEMA)?;
-        Ok(Store { conn })
+        conn.pragma_update(None, "foreign_keys", "ON")?;
+        let version: u32 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if version > 3 {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        let tx = conn.unchecked_transaction()?;
+        tx.execute_batch(SCHEMA)?;
+        if version < 3 {
+            tx.execute_batch(crate::progress::SCHEMA)?;
+            tx.execute_batch("INSERT OR IGNORE INTO progress_commits SELECT json_extract(data, '$.game.match_id') FROM rooms WHERE json_valid(data) AND json_extract(data, '$.game.m.result') IS NOT NULL AND json_extract(data, '$.game.match_id') IS NOT NULL;
+             INSERT OR IGNORE INTO progress_commits SELECT json_extract(data, '$.game.match_id') FROM tables WHERE json_valid(data) AND json_extract(data, '$.game.t.result') IS NOT NULL AND json_extract(data, '$.game.match_id') IS NOT NULL;
+             PRAGMA user_version=3;")?;
+        }
+        tx.commit()?;
+        Ok(Store {
+            conn,
+            rewards: Default::default(),
+        })
     }
 
     pub fn save_room(&self, room: &Room, now: u64) -> rusqlite::Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
         let data = serde_json::to_string(room).expect("room serializes");
-        self.conn.execute(
+        tx.execute(
             "INSERT INTO rooms (id, status, data, updated_ms) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT (id) DO UPDATE SET status = ?2, data = ?3, updated_ms = ?4",
             params![room.id, status_name(room.status), data, now as i64],
         )?;
+        crate::progress::room(&tx, room, now, &self.rewards)?;
+        tx.commit()?;
+        crate::progress::publish_events(&self.conn);
         Ok(())
     }
 
@@ -111,6 +135,7 @@ impl Store {
     }
 
     pub fn save_table(&self, table: &TableRoom, now: u64) -> rusqlite::Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
         let data = serde_json::to_string(table).expect("table serializes");
         let status = match table.status {
             TableStatus::Lobby => "lobby",
@@ -118,11 +143,14 @@ impl Store {
             TableStatus::Finished => "finished",
             TableStatus::Closed => "closed",
         };
-        self.conn.execute(
+        tx.execute(
             "INSERT INTO tables (id, status, data, updated_ms) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT (id) DO UPDATE SET status = ?2, data = ?3, updated_ms = ?4",
             params![table.id, status, data, now as i64],
         )?;
+        crate::progress::table(&tx, table, now, &self.rewards)?;
+        tx.commit()?;
+        crate::progress::publish_events(&self.conn);
         Ok(())
     }
 

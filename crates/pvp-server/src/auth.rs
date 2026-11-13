@@ -39,6 +39,11 @@ impl Sessions {
         (now < expires).then(|| self.new_ticket(profile, now))
     }
 
+    pub fn profile(&self, session: &str, now: u64) -> Option<Profile> {
+        let (profile, expires) = self.sessions.get(session)?;
+        (now < *expires).then(|| profile.clone())
+    }
+
     /// Consumes a ticket.
     pub fn redeem(&mut self, ticket: &str, now: u64) -> Option<Profile> {
         let (profile, expires) = self.tickets.remove(ticket)?;

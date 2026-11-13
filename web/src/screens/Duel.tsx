@@ -1,3 +1,4 @@
+import { ResultProgress } from '../profile/ResultProgress';
 import { FeedbackSettings } from '../components/FeedbackSettings';
 import { useEffect, useRef, useState } from 'react';
 import { ConfirmDialog } from '../components/Dialog';
@@ -670,6 +671,7 @@ function DuelResult({
           </li>
         )}
       </ul>
+      <ResultProgress matchId={room.game!.match_id} />
       <div className="result__actions">
         {!opponentHere ? (
           <p className="duel__text">{name} не в сети. Можно отправить новое приглашение.</p>

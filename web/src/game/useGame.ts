@@ -6,6 +6,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { engine } from '../engine/engine';
 import type { EngineResult, MatchState, Opponent, PlayerAction, PlayerView } from '../engine/types';
 import { track } from './analytics';
+import { accountKey, queueLocal } from '../profile/api';
+import { botName } from './opponents';
 import {
   ARCHIVE_VERSION,
   matchFacts,
@@ -34,7 +36,14 @@ const BOT_DELAY_REDUCED_MS = 350;
 function persist(s: Session): boolean {
   const saved = { state: s.state, meta: s.meta };
   if (s.view.kind === 'tutorial') return storage.saveTutorial(saved);
-  if (s.view.phase === 'match_over') return storage.clearMatch();
+  if (s.view.phase === 'match_over' && s.view.result) {
+    const r = s.view.result;
+    if (!queueLocal({ match_id: s.view.match_id, mode: 'solo', outcome: r.outcome, final_stack: r.final_stacks[0], hands_played: r.hands_played, hands_won: r.hands_won[0], opponents: [botName(s.view.opponent)] }, s.meta.profileOwner)) {
+      storage.saveMatch(saved);
+      return false;
+    }
+    return storage.clearMatch();
+  }
   return storage.saveMatch(saved);
 }
 
@@ -113,7 +122,7 @@ export function useGame({ paused }: { paused: boolean }) {
   const startMatch = useCallback((opponent: Opponent) => {
     const firstMatch = storage.loadStats().lastMatchId === null;
     const now = Date.now();
-    const next = commit(engine.newMatch(opponent), { startedAt: now, handStartedAt: now, firstMatch });
+    const next = commit(engine.newMatch(opponent), { startedAt: now, handStartedAt: now, firstMatch, profileOwner: accountKey() });
     if (next) track('match_started', { match_id: next.view.match_id, is_first_match: firstMatch, opponent });
     return next;
   }, [commit]);
@@ -138,6 +147,7 @@ export function useGame({ paused }: { paused: boolean }) {
     const next: Session = { state: res.state, view: res.view, meta: loaded.saved.meta };
     sessionRef.current = next;
     setSession(next);
+    persist(next);
     return { ok: true, session: next };
   }, []);
 
