@@ -2995,3 +2995,10 @@ button.home-profile { background: transparent; color: inherit; border: 0; font: 
 .profile-xp progress::-webkit-progress-value { background: #3268db; border-radius: 8px; }
 .profile-xp progress::-moz-progress-bar { background: #3268db; border-radius: 8px; }
 .column[hidden] { display: none; }
+
+/* Hand explanations stay above the action dock, outside the scrolling table. */
+.table-screen > .hand-result { flex: none; min-width: 0; }
+.hand-result .banner { margin: 4px 0 0; }
+.hand-result .banner__detail { width: 100%; }
+.hand-result .banner__reason { font-size: 14px; line-height: 1.4; }
+.table-screen--result .seat-view__bet:empty { display: none; }

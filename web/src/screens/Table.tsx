@@ -140,7 +140,7 @@ export function Table(props: Props) {
         </div>
       )}
 
-      <div className="table-scroll" role="region" aria-label="Стол и результат раздачи" tabIndex={0}>
+      <div className="table-scroll" role="region" aria-label="Стол и история действий" tabIndex={0}>
       <TableArena opponents={[renderSeat('bot')]} hero={renderSeat('human')}>
         <div className="pot" aria-live="polite">Банк {potShown}</div>
         <div className="board" aria-label="Общие карты">
@@ -148,9 +148,7 @@ export function Table(props: Props) {
         </div>
         <div className="felt__street">{settled ? (outcome?.by_fold ? 'Раздача завершена' : 'Вскрытие') : STREET_NAME[reveal.revealing ? streetFor(reveal.visible) : view.street]}</div>
       </TableArena>
-      {settled && outcome && <><ResultBanner view={view} bot={bot} focus={currentFocus} onFocus={f => setFocus({ key: handKey, focus: f })} />
-        <HandHistory actions={view.actions.map(a => ({ ...a, name: a.seat === 'human' ? 'Вы' : bot }))} />
-      </>}
+      {settled && outcome && <HandHistory actions={view.actions.map(a => ({ ...a, name: a.seat === 'human' ? 'Вы' : bot }))} />}
 
       {hint && (
         <TutorialHint
@@ -161,6 +159,10 @@ export function Table(props: Props) {
       )}
 
       </div>
+
+      {settled && outcome && <div className="hand-result">
+        <ResultBanner view={view} bot={bot} focus={currentFocus} onFocus={f => setFocus({ key: handKey, focus: f })} />
+      </div>}
 
       <div className="dock">
         <div className="dock__context" aria-live="polite">

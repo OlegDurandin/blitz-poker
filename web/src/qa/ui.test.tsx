@@ -9,7 +9,7 @@ import { TableOnline } from '../screens/TableOnline';
 import { RaiseSheet } from '../components/RaiseSheet';
 import { Home } from '../screens/Home';
 import { engine, initEngine, tableEngine } from '../engine/engine';
-import type { EngineResult, TableEngineResult, TableOutcome, TableView } from '../engine/types';
+import type { EngineResult, PlayerView, TableEngineResult, TableOutcome, TableView } from '../engine/types';
 import type { Duel } from '../pvp/useDuel';
 import { storage } from '../game/storage';
 
@@ -30,7 +30,35 @@ beforeAll(async () => {
   expect(result.phase).toBe('hand_over');
 });
 
+/** The reported all-in result: A-high loses to a pair of eights. */
+function screenshotShowdown(): PlayerView {
+  return { ...ok(engine.newMatch('alex', '1234567890abcdef')).view,
+    phase: 'hand_over', street: 'river', hand_number: 7, sb: 30, bb: 60,
+    hole: ['As','5s'], opponent_hole: ['3c','8c'], board: ['6c','4h','2c','8d','Jh'],
+    stacks: [0,1200], bets: [0,0], pot: 0, to_act: null, legal: null, is_final_hand: true,
+    outcome: { winner: 'bot', by_fold: false, ended_on: 'river', pot: 230, awarded: [0,230], net: [-115,115], runout_from: null,
+      showdown: [
+        { hole: ['As','5s'], category: 'high_card', best: ['As','Jh','8d','6c','5s'] },
+        { hole: ['3c','8c'], category: 'pair', best: ['8c','8d','Jh','6c','4h'] },
+      ],
+    },
+  };
+}
+
 describe('3.1 presentation invariants', () => {
+  it('keeps both combinations and the winning reason outside the scrolling table at the final hand', () => {
+    const html = renderToStaticMarkup(<Table {...tableProps} view={screenshotShowdown()} />);
+    const summaryStart = html.indexOf('<div class="hand-result">');
+    const dockStart = html.indexOf('<div class="dock">');
+    expect(summaryStart).toBeGreaterThan(html.indexOf('class="table-scroll"'));
+    const summary = html.slice(summaryStart, dockStart);
+    expect(summary).toContain('Вы — старшая карта: туз');
+    expect(summary).toContain('Бот Алекс — пара восьмёрок');
+    expect(summary).toContain('Пара сильнее старшей карты');
+    expect(summary).toContain('aria-pressed');
+    expect(html.slice(dockStart)).toContain('Итоги матча');
+  });
+
   it.each([2, 3, 4])('rotates %i seats while preserving their absolute indices', n => {
     for (let me = 0; me < n; me++) {
       expect(relativeSeats(n, me)).toHaveLength(n - 1);
@@ -99,6 +127,7 @@ describe('3.1 presentation invariants', () => {
       table2:<Table {...tableProps} view={ok(engine.newMatch('alex','1234567890abcdef')).view} />,
       table3:<Ring {...tableProps} view={views[0]} />,
       table4:<Ring {...tableProps} view={mid.view} />,
+      'showdown-heads-up':<Table {...tableProps} view={screenshotShowdown()} />,
       showdown:<Ring {...tableProps} view={result} />,
       lobby:<TableOnline duel={duel} inviteId={null} seats={4} onExit={noop} onRules={noop} />,
       raise:<><Ring {...tableProps} view={views[1]} /><RaiseSheet option={{kind:'raise',min_to:40,max_to:600,step:20,presets:[{kind:'half_pot',to:60,enabled:true},{kind:'pot',to:80,enabled:true},{kind:'all_in',to:600,enabled:true}]}} onConfirm={noop} onCancel={noop} /></>,

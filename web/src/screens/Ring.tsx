@@ -152,7 +152,7 @@ export function Ring(props: Props) {
         </div>
       )}
 
-      <div className="table-scroll" role="region" aria-label="Стол и результат раздачи" tabIndex={0}>
+      <div className="table-scroll" role="region" aria-label="Стол и история действий" tabIndex={0}>
       <TableArena opponents={opponents.map(seat => renderSeat(seat))} hero={renderSeat(me)}>
         <div className="pot" aria-live="polite">Банк {potShown}</div>
         <div className="board" aria-label="Общие карты">
@@ -160,11 +160,13 @@ export function Ring(props: Props) {
         </div>
         <div className="felt__street">{settled ? (outcome?.by_fold ? 'Раздача завершена' : 'Вскрытие') : STREET_NAME[reveal.revealing ? streetFor(reveal.visible) : view.street]}</div>
       </TableArena>
-      {settled && outcome && <><RingBanner view={view} outcome={outcome} people={people} />
-        <HandHistory actions={view.actions.map(a => ({ ...a, name: seatName(view, a.seat, people) }))} />
-      </>}
+      {settled && outcome && <HandHistory actions={view.actions.map(a => ({ ...a, name: seatName(view, a.seat, people) }))} />}
 
       </div>
+
+      {settled && outcome && <div className="hand-result">
+        <RingBanner view={view} outcome={outcome} people={people} />
+      </div>}
 
       <div className="dock">
         <div className="dock__context" aria-live="polite">
