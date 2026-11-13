@@ -57,7 +57,7 @@ export function useDuel(active: boolean) {
   const tableId = useRef<string | null>(null);
   const pendingJoinTable = useRef<string | null>(null);
   // Keep the same request id until acknowledged, including across reconnects.
-  const pendingCreate = useRef<Extract<ClientMsg, { type: 'create_room' | 'create_table' }> | null>(null);
+  const pendingCreate = useRef<Extract<ClientMsg, { type: 'create_room' | 'create_table' | 'create_solo' }> | null>(null);
 
   const onMessage = useCallback((msg: ServerMsg) => {
     switch (msg.type) {
@@ -108,7 +108,7 @@ export function useDuel(active: boolean) {
         setState((s) => ({ ...s, pending: false, error: { code: msg.code, message: msg.message } }));
         break;
       case 'server_error':
-        pendingCreate.current = null;
+        if (msg.code !== 'persistence_pending') pendingCreate.current = null;
         setState((s) => ({ ...s, error: { code: msg.code, message: msg.message } }));
         break;
       default:
@@ -120,7 +120,7 @@ export function useDuel(active: boolean) {
     if (!active || !PVP_URL) return;
     setState((s) => ({ ...s, conn: 'connecting', connError: null }));
     let stopped = false;
-    void platform.getUser().then((user) => {
+    void platform.getUser().catch(() => null).then((user) => {
       if (stopped) return;
       const dev = devUserId();
       const me = user ?? { name: dev ? `Игрок ${dev}` : guest.name() || 'Игрок', photo: null };
@@ -256,6 +256,11 @@ export function useDuel(active: boolean) {
     reconnect: () => conn.current?.reconnect(),
 
     // ---------- tables ----------
+    createSolo: (opponent: Opponent) => {
+      reset();
+      pendingCreate.current = { type: 'create_solo', request_id: randomId(), opponent };
+      conn.current?.send(pendingCreate.current);
+    },
     createTable: (seats: number) => {
       if (tableId.current) send({ type: 'leave_table', table_id: tableId.current });
       reset();

@@ -16,7 +16,7 @@ vi.mock('react', () => ({
   useCallback: (fn: unknown) => fn,
   useEffect: (fn: () => void | (() => void)) => { h.effects.push(fn); },
 }));
-vi.mock('../platform', () => ({ platform: { getUser: async () => ({ name: 'Test', photo: null }) } }));
+vi.mock('../platform', () => ({ platform: { getUser: vi.fn(async () => ({ name: 'Test', photo: null })) } }));
 vi.mock('../game/analytics', () => ({ track: vi.fn() }));
 vi.mock('./config', () => ({ PVP_URL: 'https://example.test', activeRoom: { set: vi.fn() }, devUserId: () => null, guest: { name: () => '' } }));
 vi.mock('./connection', () => ({ DuelConnection: class {
@@ -95,4 +95,29 @@ it('preserves an open lobby on home navigation, but clears it on explicit leave'
   expect(activeRoom.set).not.toHaveBeenCalled();
   duel.leaveTable();
   expect(activeRoom.set).toHaveBeenCalledWith(null);
+});
+
+it('queues a Solo intent once and retries the identical command after disconnect or persistence failure', async () => {
+  const d = render(); d.createSolo('tight'); await mount();
+  const socket = h.sockets[0]; socket.connect();
+  const command = socket.send.mock.calls[0][0];
+  expect(command).toMatchObject({ type: 'create_solo', opponent: 'tight' });
+  socket.handlers.onMessage({ type: 'server_error', code: 'persistence_pending', message: 'retry' });
+  socket.connect(); expect(socket.send.mock.calls[1][0]).toEqual(command);
+  socket.handlers.onMessage({ type: 'table_created', request_id: command.request_id, table_id: 'solo-id', reused: false });
+  socket.send.mockClear(); socket.connect();
+  expect(socket.send).toHaveBeenCalledWith({ type: 'request_table_snapshot', table_id: 'solo-id' });
+  expect(socket.send).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'create_solo' }));
+});
+it('cancelling a pending Solo before offline fallback prevents a late creation when network returns', async () => {
+  const d = render(); d.createSolo('alex'); d.reset(true); await mount(); h.sockets[0].connect();
+  expect(h.sockets[0].send).not.toHaveBeenCalled();
+});
+
+it('can start authenticated Solo when fetching a cosmetic platform avatar fails', async () => {
+  const { platform } = await import('../platform');
+  vi.mocked(platform.getUser).mockRejectedValueOnce(new Error('bridge unavailable'));
+  const duel = render(); duel.createSolo('alex'); await mount(); await Promise.resolve();
+  h.sockets[0].connect();
+  expect(h.sockets[0].send).toHaveBeenCalledWith(expect.objectContaining({ type: 'create_solo' }));
 });

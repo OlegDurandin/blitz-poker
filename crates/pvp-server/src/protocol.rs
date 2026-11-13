@@ -78,6 +78,10 @@ pub enum ClientMsg {
 
     // ---------- tables of 2–4 (people and bots) ----------
     /// Retrying with the same `request_id` returns the same table.
+    CreateSolo {
+        request_id: String,
+        opponent: Opponent,
+    },
     CreateTable {
         request_id: String,
         seats: usize,
@@ -140,7 +144,8 @@ impl ClientMsg {
             | ClientMsg::DeclineRematch { room_id }
             | ClientMsg::Surrender { room_id } => vec![room_id],
             ClientMsg::Heartbeat => vec![],
-            ClientMsg::CreateTable { request_id, .. } => vec![request_id],
+            ClientMsg::CreateTable { request_id, .. }
+            | ClientMsg::CreateSolo { request_id, .. } => vec![request_id],
             ClientMsg::TableAction {
                 table_id,
                 match_id,
@@ -162,6 +167,7 @@ impl ClientMsg {
         matches!(
             self,
             ClientMsg::CreateTable { .. }
+                | ClientMsg::CreateSolo { .. }
                 | ClientMsg::JoinTable { .. }
                 | ClientMsg::LeaveTable { .. }
                 | ClientMsg::TableAddBot { .. }

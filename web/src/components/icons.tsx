@@ -52,6 +52,19 @@ export function BotAvatar({ color = '#6A95FF' }: { color?: string }) {
   );
 }
 
+/** Two pocket cards and a lightning bolt for the ordinary quick-game action. */
+export function QuickPlayIcon() {
+  return (
+    <svg className="quick-play-icon" viewBox="0 0 48 48" aria-hidden="true">
+      <circle cx="24" cy="24" r="23" fill="#19324F" stroke="#416D99" strokeWidth="1.5" />
+      <rect x="12" y="12" width="18" height="26" rx="3.5" transform="rotate(-16 21 25)" fill="#72B6F5" />
+      <rect x="22" y="9" width="18" height="27" rx="3.5" transform="rotate(10 31 22.5)" fill="#EDF6FF" />
+      <path d="m32 15-9 11h7l-2 8 10-13h-7l1-6Z" fill="#2F6DE0" stroke="#EDF6FF" strokeWidth="1" strokeLinejoin="round" />
+      <path d="M6 21h5M5 27h5" stroke="#8FDCCF" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export function Trophy() {
   return (
     <svg className="result-icon" viewBox="0 0 96 96" aria-hidden="true">

@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { platform, type PlatformUser } from '../platform';
 import { FeedbackSettings } from '../components/FeedbackSettings';
 import { Dialog } from '../components/Dialog';
-import { BotAvatar, SpadeLogo } from '../components/icons';
+import { BotAvatar, QuickPlayIcon, SpadeLogo } from '../components/icons';
 import { Difficulty } from '../components/OpponentPicker';
 import type { Opponent } from '../engine/types';
 import { opponentInfo } from '../game/opponents';
@@ -10,6 +10,7 @@ import { completedMatches, type Stats } from '../game/storage';
 import { BUILD } from '../pvp/config';
 
 interface Props {
+  dailyCard?: ReactNode;
   stats: Stats;
   hasSavedMatch: boolean;
   tutorialInProgress: boolean;
@@ -73,10 +74,11 @@ export function Home(p: Props) {
 
       <div className="home__actions">
         <button className="home-mode" onClick={p.hasSavedMatch ? p.onContinue : p.tutorialInProgress ? p.onContinueTutorial : p.onStart}>
-          <BotAvatar color={opponentInfo(p.opponent).color} />
+          <QuickPlayIcon />
           <span><strong>{p.hasSavedMatch ? 'Продолжить матч' : p.tutorialInProgress ? 'Продолжить обучение' : 'Быстрая игра'}</strong><small>{opponentInfo(p.opponent).name} · один на один</small></span>
           <span aria-hidden="true">›</span>
         </button>
+        {p.dailyCard}
         {p.onJoinByCode && <button className="home-mode home-mode--code" onClick={p.onJoinByCode}><span aria-hidden="true">⌘</span><strong>Войти по коду</strong><span aria-hidden="true">›</span></button>}
         <button className="home-more" onClick={() => setModes(true)}>Все режимы и выбор бота <span aria-hidden="true">›</span></button>
       </div>

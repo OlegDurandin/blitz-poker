@@ -1131,3 +1131,254 @@ async fn personal_progress_is_private_idempotent_and_survives_restart() {
     s.stop();
     std::fs::remove_file(db).unwrap();
 }
+
+#[tokio::test]
+async fn daily_api_uses_verified_owner_and_never_accepts_client_progress() {
+    let s = start(":memory:").await;
+    let vk = Client::login(s.addr, 73, "VK").await;
+    let tg = Client::login_telegram(s.addr, 73, "TG").await;
+    assert_eq!(get(s.addr, "/api/me/daily-challenges", None).await.0, 401);
+    assert_eq!(
+        get(s.addr, "/api/me/daily-challenges", Some("forged"))
+            .await
+            .0,
+        401
+    );
+    let (a, b) = tokio::join!(
+        get(s.addr, "/api/me/daily-challenges", Some(&vk.session)),
+        get(
+            s.addr,
+            "/api/me/daily-challenges?player_id=someone-else&user_id=73",
+            Some(&vk.session)
+        )
+    );
+    assert_eq!(a.0, 200);
+    assert_eq!(b.0, 200);
+    assert_eq!(a.1["items"], b.1["items"]);
+    assert_eq!(a.1["total_count"], 3);
+    let (_, t) = get(s.addr, "/api/me/daily-challenges", Some(&tg.session)).await;
+    assert_ne!(a.1["items"][0]["id"], t["items"][0]["id"]);
+    assert_eq!(
+        post(
+            s.addr,
+            "/api/me/daily-challenges",
+            &json!({"hand_won":true,"player_id":"someone-else"}),
+            Some(&vk.session)
+        )
+        .await
+        .0,
+        405
+    );
+    let report = json!({"match_id":"not-authoritative", "mode":"solo", "outcome":"win", "final_stack":1200, "hands_played":8, "hands_won":8,"opponents":["Бот"]});
+    assert_eq!(
+        post(s.addr, "/api/me/local-results", &report, Some(&vk.session))
+            .await
+            .0,
+        200
+    );
+    let (_, after) = get(s.addr, "/api/me/daily-challenges", Some(&vk.session)).await;
+    assert_eq!(after["items"], a.1["items"]);
+    s.stop();
+}
+
+#[tokio::test]
+async fn daily_tasks_progress_from_server_bots_without_any_human_opponent() {
+    let s = start(":memory:").await;
+    let mut host = Client::login(s.addr, 903, "Игрок").await;
+    host.send(json!({"type":"create_table","request_id":"daily-bots","seats":2}))
+        .await;
+    let table_id = host.until(|m| m["type"] == "table_created").await["table_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    table_snapshot(&mut host, |t| t["status"] == "lobby").await;
+    host.send(json!({"type":"table_add_bot","table_id":table_id,"opponent":"alex"}))
+        .await;
+    table_snapshot(&mut host, |t| t["seats"][1]["type"] == "bot").await;
+    host.send(json!({"type":"start_table","table_id":table_id}))
+        .await;
+    let start = table_snapshot(&mut host, |t| t["status"] == "playing").await;
+    let finished = play_table(&mut host, &table_id, start).await;
+    let first_wins = finished["game"]["view"]["result"]["hands_won"][0]
+        .as_u64()
+        .unwrap();
+    let (_, one) = get(s.addr, "/api/me/daily-challenges", Some(&host.session)).await;
+    assert_eq!(one["items"][0]["progress"], 1);
+    let first_hands = finished["game"]["view"]["result"]["hands_played"]
+        .as_u64()
+        .unwrap();
+    assert_eq!(one["items"][1]["progress"], first_hands.min(6));
+    assert_eq!(one["items"][2]["progress"], first_wins.min(2));
+    host.send(json!({"type":"table_again","table_id":table_id}))
+        .await;
+    let again = table_snapshot(&mut host, |t| t["status"] == "playing").await;
+    let second = play_table(&mut host, &table_id, again).await;
+    let second_hands = second["game"]["view"]["result"]["hands_played"]
+        .as_u64()
+        .unwrap();
+    let (_, two) = get(s.addr, "/api/me/daily-challenges", Some(&host.session)).await;
+    assert_eq!(
+        two["items"][1]["progress"],
+        (first_hands + second_hands).min(6)
+    );
+    assert_eq!(two["items"][0]["progress"], 2);
+    assert_eq!(two["items"][0]["status"], "rewarded");
+    let (_, p) = get(s.addr, "/api/me/profile", Some(&host.session)).await;
+    let match_xp: u64 = p["recent_matches"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["xp"].as_u64().unwrap())
+        .sum();
+    let daily_xp: u64 = two["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["awarded_xp"].as_u64().unwrap())
+        .sum::<u64>()
+        + two["completion_bonus"]["awarded_xp"].as_u64().unwrap();
+    assert_eq!(p["progress"]["xp_total"], match_xp + daily_xp);
+    assert!(match_xp + daily_xp <= 100, "common bot cap");
+    s.stop();
+}
+
+#[tokio::test]
+async fn solo_command_and_daily_rewards_are_idempotent_through_two_restarts() {
+    let path = std::env::temp_dir().join(format!(
+        "solo-restart-{}.sqlite",
+        pvp_server::ids::room_id()
+    ));
+    let path = path.to_str().unwrap();
+    let s = start(path).await;
+    let mut host = Client::login(s.addr, 331, "Solo").await;
+    let command = json!({"type":"create_solo","request_id":"solo-331-retry","opponent":"tight"});
+    host.send(command.clone()).await;
+    let created = host.until(|m| m["type"] == "table_created").await;
+    let id = created["table_id"].as_str().unwrap().to_string();
+    let first = table_snapshot(&mut host, |t| t["status"] == "playing").await;
+    let match_id = first["game"]["match_id"].clone();
+    assert_eq!(first["seats"].as_array().unwrap().len(), 2);
+    assert_eq!(first["seats"][1]["opponent"], "tight");
+    host.send(command.clone()).await;
+    assert_eq!(
+        host.until(|m| m["type"] == "table_created").await["table_id"],
+        id
+    );
+    s.stop();
+    let s = start(path).await;
+    let mut host = Client::login(s.addr, 331, "Solo").await;
+    host.send(command.clone()).await;
+    assert_eq!(
+        host.until(|m| m["type"] == "table_created").await["table_id"],
+        id
+    );
+    let restored = table_snapshot(&mut host, |t| t["status"] == "playing").await;
+    assert_eq!(restored["game"]["match_id"], match_id);
+    let finished = play_table(&mut host, &id, restored).await;
+    let hands = finished["game"]["view"]["result"]["hands_played"]
+        .as_u64()
+        .unwrap();
+    let (_, daily) = get(s.addr, "/api/me/daily-challenges", Some(&host.session)).await;
+    assert_eq!(daily["items"][0]["progress"], 1);
+    assert_eq!(daily["items"][1]["progress"], hands.min(6));
+    let (_, p) = get(s.addr, "/api/me/profile", Some(&host.session)).await;
+    s.stop();
+    let s = start(path).await;
+    let mut host = Client::login(s.addr, 331, "Solo").await;
+    host.send(command).await;
+    assert_eq!(
+        host.until(|m| m["type"] == "table_created").await["table_id"],
+        id
+    );
+    let terminal = table_snapshot(&mut host, |t| t["status"] == "finished").await;
+    assert_eq!(terminal["game"]["match_id"], match_id);
+    let (_, again) = get(s.addr, "/api/me/daily-challenges", Some(&host.session)).await;
+    assert_eq!(daily["items"], again["items"]);
+    assert_eq!(daily["completion_bonus"], again["completion_bonus"]);
+    let (_, p2) = get(s.addr, "/api/me/profile", Some(&host.session)).await;
+    assert_eq!(p["progress"], p2["progress"]);
+    assert_eq!(p2["statistics"]["solo"]["matches_played"], 1);
+    let mut guest =
+        Client::login_guest(s.addr, "solo-guest-0123456789abcdef0123456789", "Гость").await;
+    guest
+        .send(json!({"type":"create_solo","request_id":"not-allowed","opponent":"alex"}))
+        .await;
+    assert_eq!(
+        guest.until(|m| m["type"] == "server_error").await["code"],
+        "guest_cannot_host"
+    );
+    s.stop();
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn daily_analytics_auth_allowlist_and_payload_limits_never_change_xp() {
+    let s = start(":memory:").await;
+    let host = Client::login_telegram(s.addr, 331, "Игрок").await;
+    let event = json!({"event":"daily_challenges_viewed","event_id":"331-test-event"});
+    assert_eq!(
+        post(s.addr, "/api/me/daily-analytics", &event, None)
+            .await
+            .0,
+        401
+    );
+    assert_eq!(
+        post(
+            s.addr,
+            "/api/me/daily-analytics",
+            &event,
+            Some(&host.session)
+        )
+        .await
+        .0,
+        200
+    );
+    assert_eq!(
+        post(
+            s.addr,
+            "/api/me/daily-analytics",
+            &event,
+            Some(&host.session)
+        )
+        .await
+        .0,
+        200
+    );
+    assert_eq!(
+        post(
+            s.addr,
+            "/api/me/daily-analytics",
+            &json!({"event":"xp_awarded","event_id":"331-test-event"}),
+            Some(&host.session)
+        )
+        .await
+        .0,
+        400
+    );
+    assert_eq!(
+        post(
+            s.addr,
+            "/api/me/daily-analytics",
+            &json!({"event":"daily_challenges_viewed","event_id":"331-test-event","cards":"As"}),
+            Some(&host.session)
+        )
+        .await
+        .0,
+        422
+    );
+    assert_eq!(
+        post(
+            s.addr,
+            "/api/me/daily-analytics",
+            &json!({"event":"daily_challenges_viewed","event_id":"x".repeat(600)}),
+            Some(&host.session)
+        )
+        .await
+        .0,
+        413
+    );
+    let (_, p) = get(s.addr, "/api/me/profile", Some(&host.session)).await;
+    assert_eq!(p["progress"]["xp_total"], 0);
+    assert_eq!(p["statistics"]["all"]["matches_played"], 0);
+    s.stop();
+}

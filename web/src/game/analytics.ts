@@ -2,6 +2,8 @@
 // Events are buffered; plug a real transport into `setTransport` when ready.
 
 export type AnalyticsEvent =
+  | 'daily_challenges_viewed'
+  | 'daily_challenges_play_clicked'
   | 'profile_opened'
   | 'profile_mode_selected'
   | 'app_open'

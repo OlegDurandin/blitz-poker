@@ -47,6 +47,11 @@ pub fn router(hub: Arc<Hub>) -> Router {
         .route("/ws", get(ws))
         .route("/health", get(health))
         .route("/api/me/profile", get(personal_profile))
+        .route("/api/me/daily-challenges", get(daily_challenges))
+        .route(
+            "/api/me/daily-analytics",
+            post(daily_analytics).layer(DefaultBodyLimit::max(512)),
+        )
         .route("/api/me/matches", get(personal_matches))
         .route("/api/me/matches/{event}", get(personal_detail))
         .route(
@@ -432,6 +437,52 @@ fn personal_response(
         ),
     }
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DailyAnalytics {
+    event: String,
+    event_id: String,
+}
+async fn daily_analytics(
+    State(hub): State<Arc<Hub>>,
+    headers: HeaderMap,
+    Json(body): Json<DailyAnalytics>,
+) -> Response {
+    let token = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or("");
+    match hub.daily_analytics(token, &body.event, &body.event_id) {
+        Ok(value) => Json(value).into_response(),
+        Err(code) => reject(
+            StatusCode::from_u16(code).unwrap(),
+            "analytics_error",
+            "Не удалось принять событие",
+        ),
+    }
+}
+
+async fn daily_challenges(State(hub): State<Arc<Hub>>, headers: HeaderMap) -> Response {
+    let token = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or("");
+    match hub.daily_challenges(token) {
+        Ok(value) => Json(value).into_response(),
+        Err(code) => reject(
+            StatusCode::from_u16(code).unwrap(),
+            "daily_error",
+            if code == 401 {
+                "Откройте задачи через VK или Telegram"
+            } else {
+                "Не удалось загрузить задачи. Повторите"
+            },
+        ),
+    }
+}
+
 async fn personal_profile(
     State(hub): State<Arc<Hub>>,
     headers: HeaderMap,

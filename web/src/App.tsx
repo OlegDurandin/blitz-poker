@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { DailyCard, DailyScreen } from './daily/DailyChallenges';
+import { useDailyChallenges } from './daily/useDailyChallenges';
 import { ProfileScreen } from './profile/Profile';
-import { syncLocal } from './profile/api';
+import { accountKey, syncLocal } from './profile/api';
 import { ConfirmDialog } from './components/Dialog';
 import { OpponentPicker } from './components/OpponentPicker';
 import { TablePicker } from './components/TablePicker';
@@ -8,6 +10,7 @@ import { PauseMenu } from './components/PauseMenu';
 import type { Opponent } from './engine/types';
 import { engine, initEngine } from './engine/engine';
 import { track } from './game/analytics';
+import { quickStartTarget } from './game/quickStart';
 import { botName } from './game/opponents';
 import { completedMatches, storage, type ArchiveLoad } from './game/storage';
 import { useGame } from './game/useGame';
@@ -38,7 +41,7 @@ type Screen =
   | { name: 'ring' }
   | { name: 'ring_result' }
   /** A table with friends on the server: `invite` from a link or code, else this player hosts. */
-  | { name: 'table_online'; invite: string | null; seats: number }
+  | { name: 'table_online'; invite: string | null; seats: number; solo?: Opponent }
   | { name: 'stats' }
   /** `invite`: room id from an invite link; null when this player hosts. */
   | { name: 'duel'; invite: string | null; byCode?: boolean }
@@ -55,6 +58,8 @@ type HistorySource = 'result' | 'stats';
 export function App() {
   const [screen, setScreen] = useState<Screen>({ name: 'loading' });
   const [profileOpen, setProfileOpen] = useState(false);
+  const [dailyOpen, setDailyOpen] = useState(false);
+  const daily = useDailyChallenges();
   const [rulesOpen, setRulesOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirm, setConfirm] = useState<Confirm>(null);
@@ -63,9 +68,17 @@ export function App() {
   const [opponent, setOpponent] = useState<Opponent>(() => storage.loadOpponent());
   const [pickerOpen, setPickerOpen] = useState(false);
   const [tablePickerOpen, setTablePickerOpen] = useState(false);
-  const game = useGame({ paused: profileOpen || menuOpen || rulesOpen || confirm !== null });
-  const ring = useTableGame({ paused: profileOpen || menuOpen || rulesOpen || confirm !== null });
+  const game = useGame({ paused: dailyOpen || profileOpen || menuOpen || rulesOpen || confirm !== null });
+  const ring = useTableGame({ paused: dailyOpen || profileOpen || menuOpen || rulesOpen || confirm !== null });
   const duel = useDuel(screen.name === 'duel' || screen.name === 'table_online');
+
+  const roomView = duel.state.room?.game;
+  const tableView = duel.state.table?.game;
+  useEffect(() => {
+    if (roomView || tableView) void daily.refresh();
+  }, [roomView?.match_id, roomView?.view.hand_number, roomView?.view.phase,
+    tableView?.match_id, tableView?.view.hand_number, tableView?.view.phase, daily.refresh]);
+  useEffect(() => { if (screen.name === 'home') void daily.refresh(); }, [screen.name, daily.refresh]);
 
   const boot = useCallback(() => {
     setScreen({ name: 'loading' });
@@ -181,9 +194,7 @@ export function App() {
       storage.saveOpponent(against);
       if (storage.loadMatch().kind !== 'none') {
         setConfirm('restart');
-      } else if (game.startMatch(against)) {
-        setScreen({ name: 'table' });
-      }
+      } else startRealMatch(against);
     } else if (ring.start(bots)) setScreen({ name: 'ring' });
   };
 
@@ -191,12 +202,21 @@ export function App() {
 
   const toTable = (ok: unknown) => ok && setScreen({ name: 'table' });
 
-  const startRealMatch = (against: Opponent = opponent) => toTable(game.startMatch(against));
+  const startLocalMatch = (against: Opponent = opponent) => toTable(game.startMatch(against));
+  const startRealMatch = (against: Opponent = opponent) => {
+    const existing = activeRoom.get();
+    const target = quickStartTarget(Boolean(PVP_URL), Boolean(accountKey()), navigator.onLine !== false, existing);
+    if (target === 'resume') openInvite(existing!);
+    else if (target === 'server') setScreen({ name: 'table_online', invite: null, seats: 2, solo: against });
+    else startLocalMatch(against);
+  };
 
   const onStart = () => {
     const firstLaunch = !storage.isTutorialDone();
     track('start_click', { first_launch: firstLaunch });
-    toTable(firstLaunch ? game.startTutorial() : game.startMatch(opponent));
+    if (PVP_URL && accountKey()) startRealMatch();
+    else if (firstLaunch) toTable(game.startTutorial());
+    else startRealMatch();
   };
 
   const onContinue = () => {
@@ -306,6 +326,7 @@ export function App() {
           onSkipTutorial={skipTutorial}
           onRules={() => setRulesOpen(true)}
           onStats={openStats}
+          dailyCard={<DailyCard state={daily} onOpen={() => setDailyOpen(true)} />}
           onProfile={PVP_URL && (platform.canHost || devUserId() !== null) ? () => setProfileOpen(true) : undefined}
           onDuel={
             // Hosting needs a messenger sign-in; guests can only join by code.
@@ -433,6 +454,8 @@ export function App() {
           duel={duel}
           inviteId={screen.invite}
           seats={screen.seats}
+          solo={screen.solo}
+          onLocalFallback={screen.solo ? () => { duel.reset(true); startLocalMatch(screen.solo); } : undefined}
           onRules={() => setRulesOpen(true)}
           onExit={() => {
             platform.clearLaunchRoom();
@@ -499,8 +522,19 @@ export function App() {
 
   return (
     <div className="app">
-      <div className="column" hidden={profileOpen} inert={profileOpen}>{content}</div>
-      {profileOpen && <ProfileScreen onClose={() => setProfileOpen(false)} onStart={() => { setProfileOpen(false); onStart(); }} />}
+      <div className="column" hidden={profileOpen || dailyOpen} inert={profileOpen || dailyOpen}>
+        {screen.name === 'table' && view?.kind !== 'tutorial' && <p className="local-mode-note" role="status">Локальная игра · результаты не засчитываются в задачи дня</p>}
+        {content}
+      </div>
+      {profileOpen && !dailyOpen && <ProfileScreen dailyCount={daily.data ? `${daily.data.completed_count}/${daily.data.total_count}` : undefined} onDaily={() => setDailyOpen(true)} onClose={() => setProfileOpen(false)} onStart={() => { setProfileOpen(false); onStart(); }} />}
+
+      {dailyOpen && <DailyScreen state={daily} onClose={() => setDailyOpen(false)} onPlay={() => {
+        setDailyOpen(false); setProfileOpen(false);
+        if (screen.name === 'table_online' && duel.state.table?.status === 'finished') duel.tableAgain();
+        else if (screen.name === 'duel' && duel.state.room?.status === 'finished') duel.requestRematch();
+        else if (screen.name !== 'duel' && screen.name !== 'table_online' && screen.name !== 'table' && screen.name !== 'ring') startRealMatch();
+      }} />}
+      {daily.notice && <div className="daily-toast" role="status">{daily.notice}</div>}
 
       {menuOpen && screen.name === 'ring' && ringView && (
         <PauseMenu

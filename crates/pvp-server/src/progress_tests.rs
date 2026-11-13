@@ -297,3 +297,47 @@ fn migration_preserves_v2_rooms_and_does_not_reward_old_results() {
     }
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn reward_configuration_validates_without_mutating_process_environment() {
+    let parse = |name: &str, value: &str| {
+        Rewards::from_lookup(|key| Ok((key == name).then(|| value.to_string())))
+    };
+    for name in [
+        "DAILY_XP_MATCHES",
+        "DAILY_XP_HANDS",
+        "DAILY_XP_WINS",
+        "DAILY_XP_BONUS",
+    ] {
+        for invalid in ["", "-1", "1.5", "NaN", "1000001", "18446744073709551616"] {
+            assert!(parse(name, invalid).is_err(), "{name}={invalid}");
+        }
+        assert!(parse(name, "0").is_ok());
+        assert!(parse(name, " 20 ").is_ok());
+        assert!(parse(name, "1000000").is_ok());
+    }
+    for invalid in ["", "true", "false", "-1", "2"] {
+        assert!(parse("DAILY_REWARDS_ENABLED", invalid).is_err());
+    }
+    assert_eq!(
+        parse("DAILY_REWARDS_ENABLED", "0").unwrap().tasks_enabled,
+        0
+    );
+    let mut r = Rewards::default();
+    assert_eq!(
+        r.warnings().len(),
+        1,
+        "default bot-budget overlap is explicit"
+    );
+    r.bot_daily = 500;
+    assert!(r.warnings().iter().any(|s| s.contains("exceeds PROFILE")));
+    r.task_bonus = 1_000_000;
+    assert!(r.warnings().iter().any(|s| s.contains("overall daily cap")));
+    r.tasks_enabled = 0;
+    assert_eq!(
+        r.warnings().len(),
+        1,
+        "disabled rewards do not emit task-budget warnings"
+    );
+    assert!(Rewards::from_lookup(|_| Err("invalid UTF-8".into())).is_err());
+}

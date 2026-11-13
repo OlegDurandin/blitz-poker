@@ -38,3 +38,12 @@ it('reports storage failure so the game controller can retain the finished snaps
   const api = await import('./api'); vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => { throw new Error('quota'); } });
   expect(api.queueLocal(report, 'vk:1')).toBe(false);
 });
+
+it('rejects an old account response that arrives after switching accounts', async () => {
+  const api = await import('./api');
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (url.endsWith('/api/auth')) return { ok: true, json: async () => ({ session: 'session', account_key: 'vk:1' }) };
+    return { ok: true, json: async () => { state.id = 2; return { secret: 'previous-player' }; } };
+  }));
+  await expect(api.personal('daily-challenges')).rejects.toThrow('Аккаунт изменился');
+});

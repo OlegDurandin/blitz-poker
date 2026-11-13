@@ -44,7 +44,8 @@ async function signIn(): Promise<void> {
   })().finally(() => { signing = null; });
   return signing;
 }
-export async function personal<T>(path: string, report?: LocalReport): Promise<T> {
+export interface DailyAnalyticsReport { event: 'daily_challenges_viewed' | 'daily_challenges_play_clicked'; event_id: string }
+export async function personal<T>(path: string, report?: LocalReport | DailyAnalyticsReport): Promise<T> {
   const owner = accountKey();
   if (sessionOwner !== owner) session = null;
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -53,6 +54,7 @@ export async function personal<T>(path: string, report?: LocalReport): Promise<T
     const res = await fetch(`${PVP_URL}/api/me/${path}`, { method: report ? 'POST' : 'GET', headers: { Authorization: `Bearer ${session}`, ...(report ? { 'Content-Type': 'application/json' } : {}) }, ...(report ? { body: JSON.stringify(report) } : {}), signal: AbortSignal.timeout(12000) });
     if (res.status === 401 && attempt === 0) { session = null; continue; }
     const data = await res.json();
+    if (owner !== accountKey()) throw new Error('Аккаунт изменился. Откройте приложение заново');
     if (!res.ok) throw new Error(data.error?.message ?? 'Не удалось загрузить профиль');
     return data as T;
   }

@@ -59,6 +59,9 @@ async fn main() {
             std::process::exit(2);
         }),
     );
+    for warning in store.rewards_warnings() {
+        tracing::warn!("{warning}");
+    }
     let bind = config.bind;
     let hub = Arc::new(Hub::new(config, store));
 

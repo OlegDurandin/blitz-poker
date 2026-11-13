@@ -25,6 +25,8 @@ interface Props {
   inviteId: string | null;
   /** Seats for a new table (host). */
   seats: number;
+  solo?: Opponent;
+  onLocalFallback?: () => void;
   onExit: () => void;
   onRules: () => void;
 }
@@ -41,7 +43,7 @@ const CLOSED_TEXT: Record<string, { title: string; text: string }> = {
   empty: { title: 'Стол закрыт', text: 'Все игроки ушли из-за стола.' },
 };
 
-export function TableOnline({ duel, inviteId, seats, onExit, onRules }: Props) {
+export function TableOnline({ duel, inviteId, seats, solo, onLocalFallback, onExit, onRules }: Props) {
   const { state } = duel;
   const table = state.table;
   const preview = state.tablePreview;
@@ -51,6 +53,13 @@ export function TableOnline({ duel, inviteId, seats, onExit, onRules }: Props) {
   const [confirm, setConfirm] = useState<'leave' | 'cancel' | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
   const [botsOpen, setBotsOpen] = useState(false);
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    if (!solo || table) return;
+    const timer = window.setTimeout(() => setSlow(true), 8000);
+    return () => window.clearTimeout(timer);
+  }, [solo, table]);
+  const fallback = solo && !table && onLocalFallback ? <div className="solo-fallback"><p>Локальная игра доступна без сервера. Её результаты не засчитываются в задачи дня. Она не продолжает уже начатую сетевую партию.</p><button className="btn btn--secondary btn--block" onClick={onLocalFallback}>Играть локально</button></div> : null;
   useTicker(Boolean(table && table.status !== 'closed'));
   const offline = state.conn !== 'online';
 
@@ -58,9 +67,10 @@ export function TableOnline({ duel, inviteId, seats, onExit, onRules }: Props) {
   useEffect(() => {
     if (state.conn !== 'online' || asked.current || table) return;
     asked.current = true;
-    if (!inviteId) duel.createTable(seats);
+    if (solo) duel.createSolo(solo);
+    else if (!inviteId) duel.createTable(seats);
     else if (preview?.table_id !== inviteId) duel.peek(inviteId);
-  }, [state.conn, table, inviteId, seats, preview, duel]);
+  }, [state.conn, table, inviteId, seats, solo, preview, duel]);
 
   // Our own seat (a reload, the host's own link): take it back, once.
   useEffect(() => {
@@ -85,6 +95,7 @@ export function TableOnline({ duel, inviteId, seats, onExit, onRules }: Props) {
         <button className="btn btn--primary btn--block" onClick={duel.reconnect}>
           Повторить подключение
         </button>
+        {fallback}
         <button className="btn btn--secondary btn--block" onClick={onExit}>
           На главную
         </button>
@@ -153,6 +164,8 @@ export function TableOnline({ duel, inviteId, seats, onExit, onRules }: Props) {
     if (err) {
       return (
         <Center title="Не получилось" text={err.message}>
+          {solo && err.code === 'persistence_pending' && <button className="btn btn--primary btn--block" onClick={duel.reconnect}>Повторить подключение</button>}
+          {fallback}
           <button className="btn btn--primary btn--block" onClick={onExit}>
             На главную
           </button>
@@ -162,6 +175,7 @@ export function TableOnline({ duel, inviteId, seats, onExit, onRules }: Props) {
     return (
       <main className="center-screen" aria-busy="true">
         <div className="loader" aria-label="Подключение" />
+        {slow && fallback}
         <p className="center-screen__text">{offline ? 'Подключаемся к серверу…' : 'Готовим стол…'}</p>
         <button className="btn btn--ghost btn--block" onClick={onExit}>
           Отмена

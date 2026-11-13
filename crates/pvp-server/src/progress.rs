@@ -37,6 +37,11 @@ pub struct Rewards {
     pub multiplayer_win: u64,
     pub bot_daily: u64,
     pub daily: u64,
+    pub task_matches: u64,
+    pub task_hands: u64,
+    pub task_wins: u64,
+    pub task_bonus: u64,
+    pub tasks_enabled: u64,
 }
 impl Default for Rewards {
     fn default() -> Self {
@@ -47,11 +52,25 @@ impl Default for Rewards {
             multiplayer_win: 10,
             bot_daily: 100,
             daily: 300,
+            task_matches: 20,
+            task_hands: 20,
+            task_wins: 30,
+            task_bonus: 30,
+            tasks_enabled: 1,
         }
     }
 }
 impl Rewards {
     pub fn from_env() -> Result<Self, String> {
+        Self::from_lookup(|name| match std::env::var(name) {
+            Ok(value) => Ok(Some(value)),
+            Err(std::env::VarError::NotPresent) => Ok(None),
+            Err(_) => Err(format!("{name} must be valid UTF-8")),
+        })
+    }
+    fn from_lookup(
+        mut lookup: impl FnMut(&str) -> Result<Option<String>, String>,
+    ) -> Result<Self, String> {
         let mut r = Self::default();
         for (name, value) in [
             ("PROFILE_XP_SOLO", &mut r.solo),
@@ -60,9 +79,15 @@ impl Rewards {
             ("PROFILE_XP_MULTIPLAYER_WIN", &mut r.multiplayer_win),
             ("PROFILE_XP_BOT_DAILY", &mut r.bot_daily),
             ("PROFILE_XP_DAILY", &mut r.daily),
+            ("DAILY_XP_MATCHES", &mut r.task_matches),
+            ("DAILY_XP_HANDS", &mut r.task_hands),
+            ("DAILY_XP_WINS", &mut r.task_wins),
+            ("DAILY_XP_BONUS", &mut r.task_bonus),
+            ("DAILY_REWARDS_ENABLED", &mut r.tasks_enabled),
         ] {
-            if let Ok(s) = std::env::var(name) {
+            if let Some(s) = lookup(name)? {
                 *value = s
+                    .trim()
                     .parse()
                     .map_err(|_| format!("{name} must be a nonnegative integer"))?;
             }
@@ -70,7 +95,28 @@ impl Rewards {
                 return Err(format!("{name} exceeds 1000000"));
             }
         }
+        if r.tasks_enabled > 1 {
+            return Err("DAILY_REWARDS_ENABLED must be 0 or 1".into());
+        }
         Ok(r)
+    }
+    pub fn warnings(&self) -> Vec<&'static str> {
+        let mut warnings = Vec::new();
+        if self.bot_daily > self.daily {
+            warnings.push(
+                "PROFILE_XP_BOT_DAILY exceeds PROFILE_XP_DAILY; the overall cap still applies",
+            );
+        }
+        let tasks = self.task_matches + self.task_hands + self.task_wins + self.task_bonus;
+        if self.tasks_enabled > 0 && tasks > self.daily {
+            warnings.push(
+                "Nominal daily task XP exceeds the overall daily cap; rewards will be clipped",
+            );
+        }
+        if self.tasks_enabled > 0 && tasks >= self.bot_daily && tasks > 0 {
+            warnings.push("Daily tasks and match XP share the bot cap; the full nominal task reward is not guaranteed in Solo");
+        }
+        warnings
     }
 }
 
@@ -223,8 +269,6 @@ pub fn insert(
     {
         return Ok(false);
     }
-    let day = row.finished_ms / 86_400_000;
-    let (total,bots):(u64,u64)=c.query_row("SELECT COALESCE(SUM(xp),0), COALESCE(SUM(CASE WHEN bot_count>0 OR source='local' THEN xp ELSE 0 END),0) FROM player_results WHERE player_id=?1 AND finished_ms>=?2 AND finished_ms<?3",params![id,(day*86_400_000) as i64,((day+1)*86_400_000) as i64],|r|Ok((r.get::<_,i64>(0)? as u64,r.get::<_,i64>(1)? as u64)))?;
     let desired = if row.mode == "solo" {
         rewards.solo
             + if row.outcome == "win" {
@@ -240,10 +284,15 @@ pub fn insert(
                 0
             }
     };
-    row.xp = desired.min(rewards.daily.saturating_sub(total));
-    if row.bot_count > 0 || row.source == "local" {
-        row.xp = row.xp.min(rewards.bot_daily.saturating_sub(bots));
-    }
+    row.xp = crate::daily::award(
+        c,
+        id,
+        &format!("match:{}", row.event_id),
+        row.finished_ms,
+        row.bot_count > 0 || row.source == "local",
+        desired,
+        rewards,
+    )?;
     row.xp_limited = row.xp < desired;
     let mut data = serde_json::to_value(&row).expect("result serializes");
     data["hands"] = history;
@@ -310,7 +359,12 @@ pub fn insert(
     Ok(true)
 }
 
-fn enqueue_event(c: &Connection, key: &str, kind: &str, payload: Value) -> rusqlite::Result<()> {
+pub(crate) fn enqueue_event(
+    c: &Connection,
+    key: &str,
+    kind: &str,
+    payload: Value,
+) -> rusqlite::Result<()> {
     c.execute(
         "INSERT OR IGNORE INTO progress_events VALUES (?1,?2,?3)",
         params![key, kind, payload.to_string()],
@@ -452,7 +506,7 @@ pub fn profile(c: &Connection, p: &Profile, source: &str, now: u64) -> rusqlite:
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
     let xp: i64 = c.query_row(
-        "SELECT COALESCE(SUM(xp),0) FROM player_results WHERE player_id=?1",
+        "SELECT COALESCE(SUM(xp),0) FROM xp_ledger WHERE player_id=?1",
         [&id],
         |r| r.get(0),
     )?;
@@ -477,6 +531,7 @@ fn outcome(o: MatchOutcome) -> String {
 }
 pub fn room(c: &Connection, r: &Room, now: u64, rewards: &Rewards) -> rusqlite::Result<()> {
     let Some(g) = &r.game else { return Ok(()) };
+    let now = g.finished_ms.unwrap_or(now);
     if g.m.phase != Phase::MatchOver {
         return Ok(());
     }
@@ -553,6 +608,7 @@ pub fn room(c: &Connection, r: &Room, now: u64, rewards: &Rewards) -> rusqlite::
 
 pub fn table(c: &Connection, t: &TableRoom, now: u64, rewards: &Rewards) -> rusqlite::Result<()> {
     let Some(g) = &t.game else { return Ok(()) };
+    let now = g.finished_ms.unwrap_or(now);
     if g.t.phase != Phase::MatchOver {
         return Ok(());
     }

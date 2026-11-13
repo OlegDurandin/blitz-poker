@@ -3002,3 +3002,28 @@ button.home-profile { background: transparent; color: inherit; border: 0; font: 
 .hand-result .banner__detail { width: 100%; }
 .hand-result .banner__reason { font-size: 14px; line-height: 1.4; }
 .table-screen--result .seat-view__bet:empty { display: none; }
+
+/* Daily goals share the existing profile surfaces and Mini App safe areas. */
+.daily-home { display: grid; gap: 9px; width: 100%; padding: 16px; margin: 0; text-align: left; color: var(--text, #edf4ff); background: #14283e; border: 1px solid #35506c; border-radius: 18px; cursor: pointer; font: inherit; }
+.daily-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.daily-home small, .daily-item small, .daily-screen small { color: #b9cce0; }
+.daily-home__link { color: #8cc1ff; font-size: 14px; }
+.daily-home progress, .daily-item progress { width: 100%; height: 6px; accent-color: #63b1ff; }
+.daily-screen { display: grid; gap: 14px; min-width: 0; }
+.daily-screen h1 { font-size: 24px; margin: 0; }
+.daily-screen p { margin: 0; }
+.daily-items { display: grid; gap: 12px; }
+.daily-item { display: grid; gap: 12px; padding: 16px; border: 1px solid #35506c; border-radius: 16px; background: #13263b; }
+.daily-item--done { border-color: #377965; }
+.daily-bonus { padding: 16px; border-radius: 16px; background: #183c37; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; }
+.daily-bonus small { flex-basis: 100%; }
+.daily-play { position: sticky; bottom: 0; padding: 12px 0 max(8px, env(safe-area-inset-bottom)); background: #101d2e; }
+.daily-toast { position: fixed; z-index: 200; bottom: max(20px, env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); width: min(90vw, 420px); padding: 14px 18px; border: 1px solid #478c76; border-radius: 16px; background: #16362f; color: #f0fff8; box-shadow: 0 8px 30px #0008; pointer-events: none; }
+.daily-skeleton { padding: 48px 16px; border-radius: 16px; background: #14283e; }
+.daily-help summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; color: #8cc1ff; }
+.daily-help summary::before { content: '›'; padding-right: 8px; }
+.daily-help[open] summary::before { content: '⌄'; }
+.local-mode-note { margin: 4px 8px; padding: 8px 12px; border: 1px solid #496481; border-radius: 12px; color: #d0e1f2; background: #14283e; font-size: 12px; }
+.solo-fallback { display: grid; gap: 12px; max-width: 420px; color: #c1d3e5; font-size: 14px; }
+.daily-heading > strong { min-width: 0; overflow-wrap: anywhere; }
+.daily-play { z-index: 1; }

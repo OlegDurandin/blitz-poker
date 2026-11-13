@@ -52,6 +52,9 @@ fn status_name(s: Status) -> &'static str {
 }
 
 impl Store {
+    pub fn rewards_warnings(&self) -> Vec<&'static str> {
+        self.rewards.warnings()
+    }
     pub fn set_rewards(&mut self, rewards: crate::progress::Rewards) {
         self.rewards = rewards;
     }
@@ -62,7 +65,7 @@ impl Store {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         let version: u32 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > 3 {
+        if version > 4 {
             return Err(rusqlite::Error::InvalidQuery);
         }
         let tx = conn.unchecked_transaction()?;
@@ -73,6 +76,9 @@ impl Store {
              INSERT OR IGNORE INTO progress_commits SELECT json_extract(data, '$.game.match_id') FROM tables WHERE json_valid(data) AND json_extract(data, '$.game.t.result') IS NOT NULL AND json_extract(data, '$.game.match_id') IS NOT NULL;
              PRAGMA user_version=3;")?;
         }
+        if version < 4 {
+            tx.execute_batch(crate::daily::SCHEMA)?;
+        }
         tx.commit()?;
         Ok(Store {
             conn,
@@ -81,13 +87,17 @@ impl Store {
     }
 
     pub fn save_room(&self, room: &Room, now: u64) -> rusqlite::Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
         let data = serde_json::to_string(room).expect("room serializes");
         tx.execute(
             "INSERT INTO rooms (id, status, data, updated_ms) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT (id) DO UPDATE SET status = ?2, data = ?3, updated_ms = ?4",
             params![room.id, status_name(room.status), data, now as i64],
         )?;
+        crate::daily::room(&tx, room, now, &self.rewards)?;
         crate::progress::room(&tx, room, now, &self.rewards)?;
         tx.commit()?;
         crate::progress::publish_events(&self.conn);
@@ -135,7 +145,10 @@ impl Store {
     }
 
     pub fn save_table(&self, table: &TableRoom, now: u64) -> rusqlite::Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
         let data = serde_json::to_string(table).expect("table serializes");
         let status = match table.status {
             TableStatus::Lobby => "lobby",
@@ -148,6 +161,7 @@ impl Store {
              ON CONFLICT (id) DO UPDATE SET status = ?2, data = ?3, updated_ms = ?4",
             params![table.id, status, data, now as i64],
         )?;
+        crate::daily::table(&tx, table, now, &self.rewards)?;
         crate::progress::table(&tx, table, now, &self.rewards)?;
         tx.commit()?;
         crate::progress::publish_events(&self.conn);

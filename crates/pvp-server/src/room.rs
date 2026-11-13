@@ -162,6 +162,12 @@ pub enum CloseReason {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Game {
+    #[serde(default)]
+    pub started_ms: u64,
+    #[serde(default)]
+    pub hand_finished_ms: Vec<u64>,
+    #[serde(default)]
+    pub finished_ms: Option<u64>,
     pub match_id: String,
     pub m: Match,
     /// Bumped on every accepted transition; clients send it back with actions.
@@ -433,6 +439,9 @@ impl Room {
         };
         let m = Match::duel(dealer.match_id(), button, &dealer.deck()).expect("a full deck");
         self.game = Some(Game {
+            started_ms: now,
+            hand_finished_ms: Vec::new(),
+            finished_ms: None,
             match_id: m.id.clone(),
             m,
             version: 1,
@@ -513,6 +522,13 @@ impl Room {
     fn after_transition(&mut self, now: u64) {
         self.activity_ms = now;
         let game = self.game.as_mut().expect("game");
+        game.hand_finished_ms.resize(game.m.history.len(), now);
+        if game.m.phase == Phase::MatchOver && game.finished_ms.is_none() {
+            game.finished_ms = Some(now);
+            if game.started_ms > 0 && now.saturating_sub(game.started_ms) < 10_000 {
+                tracing::info!(event = "daily_fast_match", match_id = %crate::ids::log_tag(&game.match_id), elapsed_ms = now.saturating_sub(game.started_ms));
+            }
+        }
         game.version += 1;
         game.turn_started_ms = now;
         match game.m.phase {

@@ -7,7 +7,7 @@ import { personal, syncLocal, type MatchPage, type MatchRow, type Mode, type Pro
 
 const MODES: Record<Mode, string> = { all: 'Все', solo: 'Соло', duel: 'Дуэли', table: 'Столы' };
 const ACHIEVEMENTS = { first_match: 'Первый матч', first_win: 'Первая победа', ten_matches: '10 матчей', three_win_streak: 'Три победы подряд' };
-export function ProfileScreen({ onClose, onStart }: { onClose: () => void; onStart: () => void }) {
+export function ProfileScreen({ onClose, onStart, onDaily, dailyCount }: { onClose: () => void; onStart: () => void; onDaily?: () => void; dailyCount?: string }) {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [mode, setMode] = useState<Mode>('all');
   const [source, setSource] = useState<Source>('all');
@@ -50,6 +50,7 @@ export function ProfileScreen({ onClose, onStart }: { onClose: () => void; onSta
       {profile && <>
         <header className="profile-identity">{profile.avatar_url && <img src={profile.avatar_url} alt="" />}<div><strong>{profile.display_name}</strong><span>{profile.platform_badge} · Уровень {profile.progress.level}</span></div></header>
         <XpProgress progress={profile.progress} />
+        {onDaily && <button className="btn btn--secondary btn--block" onClick={onDaily}>Задачи дня {dailyCount ?? ""} ›</button>}
         <label className="profile-source">Результаты<select value={source} disabled={busy} onChange={e => setSource(e.target.value as Source)}><option value="all">Все игры</option><option value="server">Серверные игры</option><option value="local">Локальные игры</option></select></label>
         <p className="profile-note">Локальные итоги передаёт приложение. Сетевые результаты подтверждает сервер. XP — личный прогресс.</p>
         <div className="profile-tabs" role="group" aria-label="Режим статистики">{(Object.keys(MODES) as Mode[]).map(m => <button key={m} disabled={busy} aria-pressed={mode === m} onClick={() => { setMode(m); track('profile_mode_selected', { mode: m }); }}>{MODES[m]}</button>)}</div>

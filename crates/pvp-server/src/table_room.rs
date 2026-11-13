@@ -82,6 +82,12 @@ impl TableSeat {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TableGame {
+    #[serde(default)]
+    pub started_ms: u64,
+    #[serde(default)]
+    pub hand_finished_ms: Vec<u64>,
+    #[serde(default)]
+    pub finished_ms: Option<u64>,
     pub match_id: String,
     pub t: Table,
     /// Bumped on every accepted transition; clients send it back with actions.
@@ -375,6 +381,9 @@ impl TableRoom {
         let t =
             Table::online(match_id.clone(), kinds, button, &dealer.deck()).expect("a valid table");
         self.game = Some(TableGame {
+            started_ms: now,
+            hand_finished_ms: Vec::new(),
+            finished_ms: None,
             match_id,
             t,
             version: 1,
@@ -447,6 +456,13 @@ impl TableRoom {
     fn after_transition(&mut self, now: u64) {
         self.activity_ms = now;
         let game = self.game.as_mut().expect("game");
+        game.hand_finished_ms.resize(game.t.history.len(), now);
+        if game.t.phase == Phase::MatchOver && game.finished_ms.is_none() {
+            game.finished_ms = Some(now);
+            if game.started_ms > 0 && now.saturating_sub(game.started_ms) < 10_000 {
+                tracing::info!(event = "daily_fast_match", match_id = %crate::ids::log_tag(&game.match_id), elapsed_ms = now.saturating_sub(game.started_ms));
+            }
+        }
         game.version += 1;
         game.turn_started_ms = now;
         match game.t.phase {

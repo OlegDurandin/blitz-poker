@@ -6,6 +6,7 @@
 
 pub mod auth;
 pub mod config;
+pub mod daily;
 pub mod hub;
 pub mod ids;
 pub mod player;

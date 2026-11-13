@@ -139,6 +139,7 @@ export type ClientMsg =
   | { type: 'decline_rematch'; room_id: string }
   | { type: 'surrender'; room_id: string }
   | { type: 'heartbeat' }
+  | { type: 'create_solo'; request_id: string; opponent: Opponent }
   | { type: 'create_table'; request_id: string; seats: number }
   | { type: 'join_table'; table_id: string }
   | { type: 'leave_table'; table_id: string }

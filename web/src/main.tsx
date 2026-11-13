@@ -1,11 +1,13 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
+import { connectDailyAnalytics } from './daily/analytics';
 import { App } from './App';
 import { reloadIfStale } from './freshness';
 import { platform } from './platform';
 import './styles.css';
 
 platform.init();
+connectDailyAnalytics();
 // Keep a bottom sheet above the keyboard in mobile WebViews.
 function viewportSize() {
   const v = window.visualViewport;

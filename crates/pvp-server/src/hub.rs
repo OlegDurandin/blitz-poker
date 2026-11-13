@@ -125,6 +125,7 @@ struct State {
     sessions: Sessions,
     store: Store,
     local_reports: Windows,
+    daily_analytics: Windows,
     pending_rooms: std::collections::HashSet<String>,
     pending_tables: std::collections::HashSet<String>,
     next_conn: u64,
@@ -189,6 +190,7 @@ impl Hub {
                 sessions: Sessions::default(),
                 store,
                 local_reports: Windows::default(),
+                daily_analytics: Windows::default(),
                 pending_rooms: Default::default(),
                 pending_tables: Default::default(),
                 next_conn: 1,
@@ -242,6 +244,63 @@ impl Hub {
 
     pub fn redeem_ticket(&self, ticket: &str) -> Option<Profile> {
         self.lock().sessions.redeem(ticket, now_ms())
+    }
+
+    pub fn daily_challenges(&self, session: &str) -> Result<serde_json::Value, u16> {
+        let st = self.lock();
+        let now = now_ms();
+        let who = st
+            .sessions
+            .profile(session, now)
+            .filter(|p| !p.id.is_guest())
+            .ok_or(401u16)?;
+        let tx = st.store.conn.unchecked_transaction().map_err(|_| 503u16)?;
+        let id = crate::progress::identity(&tx, &who, now)
+            .map_err(|_| 503u16)?
+            .ok_or(401u16)?;
+        let value = crate::daily::get(&tx, &id, now, &st.store.rewards).map_err(|_| 503u16)?;
+        tx.commit().map_err(|_| 503u16)?;
+        Ok(value)
+    }
+
+    pub fn daily_analytics(
+        &self,
+        session: &str,
+        event: &str,
+        event_id: &str,
+    ) -> Result<serde_json::Value, u16> {
+        if !["daily_challenges_viewed", "daily_challenges_play_clicked"].contains(&event)
+            || !(8..=64).contains(&event_id.len())
+            || !event_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            return Err(400);
+        }
+        let mut st = self.lock();
+        let now = now_ms();
+        let who = st
+            .sessions
+            .profile(session, now)
+            .filter(|p| !p.id.is_guest())
+            .ok_or(401u16)?;
+        if st.daily_analytics.add(&who.id.to_string(), now, 60_000) > 60 {
+            return Err(429);
+        }
+        let tx = st.store.conn.unchecked_transaction().map_err(|_| 503u16)?;
+        let id = crate::progress::identity(&tx, &who, now)
+            .map_err(|_| 503u16)?
+            .ok_or(401u16)?;
+        crate::progress::enqueue_event(
+            &tx,
+            &format!("clientdaily:{id}:{event_id}"),
+            event,
+            serde_json::json!({"player_id":id,"received_ms":now}),
+        )
+        .map_err(|_| 503u16)?;
+        tx.commit().map_err(|_| 503u16)?;
+        crate::progress::publish_events(&st.store.conn);
+        Ok(serde_json::json!({"ok":true}))
     }
 
     pub fn personal(
@@ -788,6 +847,7 @@ impl Hub {
                 self.with_room(&mut st, &room_id, |room, _| room.surrender(player, now))
             }
             ClientMsg::CreateTable { .. }
+            | ClientMsg::CreateSolo { .. }
             | ClientMsg::JoinTable { .. }
             | ClientMsg::LeaveTable { .. }
             | ClientMsg::TableAddBot { .. }
@@ -934,14 +994,88 @@ impl Hub {
                 }
             };
         match msg {
-            ClientMsg::CreateTable { .. } if player.is_guest() => reply(
-                st,
-                error(
-                    None,
-                    "guest_cannot_host",
-                    "Собрать стол можно только в игре внутри VK или Telegram. Войдите по коду друга",
-                ),
-            ),
+            ClientMsg::CreateTable { .. } | ClientMsg::CreateSolo { .. } if player.is_guest() => {
+                reply(
+                    st,
+                    error(
+                        None,
+                        "guest_cannot_host",
+                        "Собрать стол можно только в игре внутри VK или Telegram. Войдите по коду друга",
+                    ),
+                )
+            }
+            ClientMsg::CreateSolo {
+                request_id,
+                opponent,
+            } => {
+                let key = (player, request_id.clone());
+                // A retry (including after restart) keeps the same match. A new
+                // request also resumes an unfinished Solo instead of farming starts.
+                let existing = st.table_requests.get(&key).cloned().or_else(|| {
+                    st.tables
+                        .values()
+                        .find(|t| {
+                            t.host == player
+                                && t.status == TableStatus::Playing
+                                && t.seats.len() == 2
+                                && t.seats
+                                    .iter()
+                                    .any(|s| matches!(s, crate::table_room::TableSeat::Bot { .. }))
+                        })
+                        .map(|t| t.id.clone())
+                });
+                let (id, reused) = if let Some(id) = existing {
+                    (id, true)
+                } else {
+                    let id = Self::fresh_id(st);
+                    let created = (|| {
+                        let mut t = TableRoom::new(
+                            id.clone(),
+                            profile.clone(),
+                            2,
+                            request_id.clone(),
+                            now,
+                        )?;
+                        t.add_bot(player, opponent, now)?;
+                        t.start(player, &mut dealer, now)?;
+                        Ok::<_, RoomError>(t)
+                    })();
+                    match created {
+                        Ok(t) => {
+                            st.tables.insert(id.clone(), t);
+                            self.metrics.tables_created.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err(e) => return fail(st, None, e),
+                    }
+                    (id, false)
+                };
+                st.table_requests.insert(key, id.clone());
+                // Save before acknowledging. If persistence fails, replay the
+                // original command after reconnect; no new game is created.
+                self.commit_table(st, &id, now);
+                if !st.pending_tables.contains(&id) {
+                    reply(
+                        st,
+                        ServerMsg::TableCreated {
+                            table_id: id.clone(),
+                            request_id,
+                            reused,
+                        },
+                    );
+                    if let Some(c) = st.conns.get(&conn_id) {
+                        self.send_table_snapshot(st, c, &id, now);
+                    }
+                } else {
+                    reply(
+                        st,
+                        error(
+                            None,
+                            "persistence_pending",
+                            "Сохраняем игру. Повторите подключение.",
+                        ),
+                    );
+                }
+            }
             ClientMsg::CreateTable { request_id, seats } => {
                 let key = (player, request_id.clone());
                 if let Some(id) = st.table_requests.get(&key).cloned() {
@@ -1221,6 +1355,7 @@ impl Hub {
         let live: std::collections::HashSet<String> = st.tables.keys().cloned().collect();
         st.table_requests.retain(|_, id| live.contains(id));
         st.local_reports.prune(now, 60_000);
+        st.daily_analytics.prune(now, 60_000);
         st.code_misses.prune(now, CODE_MISSES_WINDOW_MS);
         st.guest_auths.prune(now, GUEST_AUTH_WINDOW_MS);
         st.sessions.prune(now);
